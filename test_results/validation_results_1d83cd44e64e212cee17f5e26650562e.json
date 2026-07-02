@@ -1,0 +1,42 @@
+{
+  "detected_format": "pumpkin",
+  "agent_attribution_available": true,
+  "metrics": {
+    "provider_malformed_response_validator": {
+      "metric_name": "provider_malformed_response_validator",
+      "explanation": "The span text reports a broken provider response.",
+      "findings": [
+        {
+          "verdict": "fail",
+          "severity": "major",
+          "culprit_agent": "GameKnowledgeAgent",
+          "failure_type": "provider_invalid_json",
+          "explanation": "The provider response was not valid JSON (a decode error was reported).",
+          "occurrences": 1,
+          "evidence": [
+            {
+              "span_id": "4a6430e69cb35b72",
+              "agent": "GameKnowledgeAgent",
+              "quote": "ERROR JSONDecodeError: Expecting value: line 183 column 1 (char 1001)"
+            }
+          ]
+        },
+        {
+          "verdict": "fail",
+          "severity": "major",
+          "culprit_agent": null,
+          "failure_type": "provider_invalid_json",
+          "explanation": "The provider response was not valid JSON (a decode error was reported).",
+          "occurrences": 1,
+          "evidence": [
+            {
+              "span_id": "698496924ca7f0a2",
+              "agent": null,
+              "quote": "ERROR JSONDecodeError: Expecting value: line 183 column 1 (char 1001)"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

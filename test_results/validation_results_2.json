@@ -1,0 +1,27 @@
+{
+  "detected_format": "who_and_when",
+  "agent_attribution_available": true,
+  "metrics": {
+    "api_status_code_validator": {
+      "metric_name": "api_status_code_validator",
+      "explanation": "An external API/HTTP call returned an error status code: the request was malformed, rejected for auth/permission reasons, the resource was missing, timed out, conflicted, hit a rate limit, or the upstream server failed.",
+      "findings": [
+        {
+          "verdict": "fail",
+          "severity": "major",
+          "culprit_agent": "WebSurfer",
+          "failure_type": "api_malformed_request",
+          "explanation": "An external API/HTTP call returned an error status code: the request was malformed, rejected for auth/permission reasons, the resource was missing, timed out, conflicted, hit a rate limit, or the upstream server failed.",
+          "occurrences": 1,
+          "evidence": [
+            {
+              "span_id": "85",
+              "agent": "WebSurfer",
+              "quote": "…make_status_error_from_response(err.response) from None openai.BadRequestError: Error code: 400 - {'error': {'inner_error': {'code': 'ResponsibleAIPolicyViolation',…"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

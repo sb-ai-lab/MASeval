@@ -1,0 +1,78 @@
+{
+  "detected_format": "trail",
+  "agent_attribution_available": true,
+  "metrics": {
+    "malformed_tool_call_validator": {
+      "metric_name": "malformed_tool_call_validator",
+      "explanation": "The span text reports a tool call that could not be parsed or executed.",
+      "findings": [
+        {
+          "verdict": "fail",
+          "severity": "major",
+          "culprit_agent": "process_item",
+          "failure_type": "tool_call_type_error",
+          "explanation": "The span text reports a TypeError/AttributeError raised during a tool call.",
+          "occurrences": 1,
+          "evidence": [
+            {
+              "span_id": "23550689031e26d0",
+              "agent": "process_item",
+              "quote": "…= unmarshal.call_and_store( \", \"problem_statement\": \"[version 2.20.0] TypeError: 'NoneType' object is not subscriptable After update from version 2.19.5 to…"
+            }
+          ]
+        },
+        {
+          "verdict": "fail",
+          "severity": "major",
+          "culprit_agent": "Step 8",
+          "failure_type": "tool_call_type_error",
+          "explanation": "The span text reports a TypeError/AttributeError raised during a tool call.",
+          "occurrences": 1,
+          "evidence": [
+            {
+              "span_id": "78d40cde0da7a70d",
+              "agent": "Step 8",
+              "quote": "…not found\") else: print(\"marshalling.py content not found\")' due to: TypeError: expected string or bytes-like object, got 'bool' [{\"Timestamp\": \"2025-03-25T09:13…"
+            }
+          ]
+        },
+        {
+          "verdict": "fail",
+          "severity": "major",
+          "culprit_agent": "Step 8",
+          "failure_type": "tool_call_runtime_error",
+          "explanation": "The span text reports a runtime exception (NameError, KeyError, ValueError, IndexError, UnboundLocalError, ...) raised while executing a tool/code call.",
+          "occurrences": 1,
+          "evidence": [
+            {
+              "span_id": "78d40cde0da7a70d",
+              "agent": "Step 8",
+              "quote": "Step 8 Internal Error AgentExecutionError: Code execution failed at line 'if marshalling_content: print(\"Found…"
+            }
+          ]
+        }
+      ]
+    },
+    "file_not_found_validator": {
+      "metric_name": "file_not_found_validator",
+      "explanation": "A required file or directory did not exist at the expected path (FileNotFoundError / no such file or directory).",
+      "findings": [
+        {
+          "verdict": "fail",
+          "severity": "major",
+          "culprit_agent": "Step 3",
+          "failure_type": "env_file_not_found",
+          "explanation": "A required file or directory did not exist at the expected path (FileNotFoundError / no such file or directory).",
+          "occurrences": 1,
+          "evidence": [
+            {
+              "span_id": "74b3acfbef472367",
+              "agent": "Step 3",
+              "quote": "Step 3 Internal Ok CHAIN Execution logs: schema.py file not found Last output from code snippet: None SWEBenchLite acd03a2d-9115-4510-8859-a887b4…"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
