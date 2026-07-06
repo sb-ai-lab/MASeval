@@ -255,9 +255,9 @@ class EvidenceChecks(BaseModel):
     """Deterministic checks applied to evidence cited by an LLM evaluator."""
 
     all_idxs_exist: bool
-    quotes_found_in_spans: bool
+    quotes_found_in_idxs: bool
     culprit_agent_matches_evidence: bool
-    span_roles_are_plausible: bool
+    idx_roles_are_plausible: bool
 
 
 
@@ -271,7 +271,7 @@ class EvidenceItemCheck(BaseModel):
 
     evidence_index: int
     idx: str
-    span_exists: bool
+    idx_exists: bool
     quote_found: bool
     role_plausible: bool
     used_raw_trace_fallback: bool = False
