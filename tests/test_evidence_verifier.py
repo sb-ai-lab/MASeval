@@ -92,7 +92,7 @@ def test_evidence_verifier_marks_invalid_missing_span():
     assert verified.verifications[0].usable_for_diagnosis is False
     assert verified.verifications[0].evidence_checks.all_span_ids_exist is False
     assert verified.verifications[0].evidence_item_checks[0].span_exists is False
-    assert "not present in the normalized trace" in verified.verifications[0].evidence_item_checks[0].problem
+    assert "span_id could not be resolved" in verified.verifications[0].evidence_item_checks[0].problem
 
 
 def test_evidence_verifier_accepts_culprit_role_and_any_matching_candidate():
