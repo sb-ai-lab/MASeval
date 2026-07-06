@@ -64,6 +64,8 @@ def _coerce_history_to_steps(history) -> list:
         return history
     if isinstance(history, tuple):
         return list(history)
+    if hasattr(history, "tolist"):  # numpy ndarray / pandas array from read_parquet
+        return list(history.tolist())
     if isinstance(history, str):
         text = history.strip()
         for parser in (ast.literal_eval, json.loads):
