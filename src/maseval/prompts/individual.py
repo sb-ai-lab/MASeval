@@ -5,7 +5,7 @@
 # The evaluator returns findings. If no issues are found, use findings: [].
 # `needs_human_review` is always false from the evaluator; only
 # EvidenceVerifier decides whether manual review is needed.
-# In `evidence[i].span_id`, prefer the trace message/step number, starting
+# In `evidence[i].idx`, prefer the trace message/step number, starting
 # from 0. If an item has an explicit response_id/state_id/tool-call id, you
 # may use it. Do not put an agent name or pseudo-id like
 # "Orchestrator (thought)".
@@ -23,7 +23,7 @@ _FINDINGS_OUTPUT_INSTRUCTIONS = """**Output Format** (STRICT — return ONLY one
       ],
       "evidence": [
         {
-          "span_id": "<message/step number from the trace, e.g. 0, 1, 2; strings are also OK>",
+          "idx": "<zero-based message/step number from the trace, e.g. 0, 1, 2; strings are also OK>",
           "role": "root_cause | propagation | contributing | context | final_effect | supporting | culprit | agent_output",
           "claim": "<what this evidence shows>",
           "quote": "<short exact quote copied from the trace>"
@@ -44,10 +44,10 @@ Conservative finding rules:
 - Every non-empty finding must contain at least one exact `quote` copied from the trace. If you cannot quote it, do not create the finding.
 
 Evidence citation rules:
-- The trace is shown as numbered messages/steps. Use that visible message number as `evidence[i].span_id`.
+- The trace is shown as numbered messages/steps. Use that visible message number as `evidence[i].idx`.
 - Message numbering starts from 0. If you are unsure whether the trace is zero-based or one-based, choose the closest message that contains the quote. The verifier tolerates +/-1.
-- `span_id` may be a JSON number (`29`) or a string (`"29"`). Both are valid.
-- Do NOT use agent names as `span_id`. Invalid: `WebSurfer`, `FileSurfer`, `Orchestrator`, `Orchestrator (thought)`, `Orchestrator (-> WebSurfer)`.
+- `idx` may be a JSON number (`29`) or a string (`"29"`). Both are valid.
+- Do NOT use agent names as `idx`. Invalid: `WebSurfer`, `FileSurfer`, `Orchestrator`, `Orchestrator (thought)`, `Orchestrator (-> WebSurfer)`.
 - Put agent names only in `culprit_agent_candidates[*].agent`.
 - The `quote` is more important than the exact index: copy the shortest exact text that proves the issue.
 - If a quote appears in several adjacent messages, cite the closest message index.
@@ -101,7 +101,7 @@ For EACH problematic agent response, produce one Finding. Examples of what to fl
 - A response contradicting previously established facts → severity "major" (or "critical"
   if the contradiction cascades downstream).
 - A response introducing extraneous but harmless observations → severity "minor".
-In `evidence[i].span_id` put the zero-based message index of the problematic response; if a concrete `response_id` is shown, you may use it instead. In
+In `evidence[i].idx` put the zero-based message index of the problematic response; if a concrete `response_id` is shown, you may use it instead. In
 `culprit_agent_candidates` list the agent that produced that response.
 
 The evaluation input is provided via dependency injection. Access the dialogue history and agent responses from the evaluation input to perform your assessment.
@@ -123,9 +123,9 @@ For EACH policy violation, produce one Finding. Examples:
   output, missed confirmation step) → severity "major".
 - The agent has a minor, incidental policy slip with no real downstream impact
   → severity "minor".
-In `evidence[i].span_id` put the zero-based message/policy index of the violated policy; if a concrete `policy_id` is shown, you may use it (and, where useful,
+In `evidence[i].idx` put the zero-based message/policy index of the violated policy; if a concrete `policy_id` is shown, you may use it (and, where useful,
 add a second evidence entry quoting the offending agent response with its response_id as
-`span_id`). In `culprit_agent_candidates` list the agent that committed the violation.
+`idx`). In `culprit_agent_candidates` list the agent that committed the violation.
 If all policies are adhered to, return `findings: []`.
 
 The evaluation data is provided below in the EVALUATION DATA section. Use this data to perform your assessment.
@@ -164,7 +164,7 @@ For EACH inconsistent intermediate state, produce one Finding. Examples:
   way that degrades the trajectory → severity "major".
 - A state with a minor logical gap or an unverified assumption of limited impact
   → severity "minor".
-In `evidence[i].span_id` put the zero-based message/state index of the problematic state; if a concrete `state_id` is shown, you may use it; where the
+In `evidence[i].idx` put the zero-based message/state index of the problematic state; if a concrete `state_id` is shown, you may use it; where the
 inconsistency propagates from/to another state, add a second evidence entry with that
 other `state_id` and `role: "propagation"`. In `culprit_agent_candidates` list the
 agent that produced the inconsistent state.
@@ -202,7 +202,7 @@ For EACH suboptimal tool selection, produce one Finding. Examples:
   → severity "major".
 - The selection is relevant and justified but a marginally better alternative existed
   → severity "minor".
-In `evidence[i].span_id` put the zero-based message/step index of the tool call; if a concrete `state_id` is shown, you may use it; you may add a second
+In `evidence[i].idx` put the zero-based message/step index of the tool call; if a concrete `state_id` is shown, you may use it; you may add a second
 evidence entry quoting the user question. In `culprit_agent_candidates` list the agent
 that made the tool call. If all tool selections are appropriate, return `findings: []`.
 
@@ -240,7 +240,7 @@ For EACH problematic parameter extraction, produce one Finding. Examples:
   critical parameter is vaguely specified → severity "major".
 - A minor formatting issue, an unjustified optional parameter, or a small over-reading
   → severity "minor".
-In `evidence[i].span_id` put the zero-based message/step index of the tool call; if a concrete `state_id` is shown, you may use it. In
+In `evidence[i].idx` put the zero-based message/step index of the tool call; if a concrete `state_id` is shown, you may use it. In
 `culprit_agent_candidates` list the agent that made the call. If all parameter
 extractions are correct, return `findings: []`.
 
@@ -289,7 +289,7 @@ For EACH response that mismatches the request, produce one Finding. Examples:
   → severity "critical" if it makes the answer unusable, otherwise "major".
 - Missing a minor requested element or slight format/verbosity mismatch → severity "minor".
 - A response that is structurally usable but slightly off-scope → severity "minor".
-In `evidence[i].span_id` put the `response_id` (or `state_id` where the response is
+In `evidence[i].idx` put the `response_id` (or `state_id` where the response is
 carried by a state). In `culprit_agent_candidates` list the agent that produced the
 response. If all responses match the request, return `findings: []`.
 

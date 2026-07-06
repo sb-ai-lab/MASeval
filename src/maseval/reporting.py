@@ -350,14 +350,14 @@ def _extract_problematic_spans(
             # kept in review_targets through the full issue summary.
             if not (item.get("quote_found") or item.get("span_exists")):
                 continue
-            span_id = item.get("resolved_span_id") or item.get("span_id")
+            span_id = item.get("resolved_idx") or item.get("idx")
             if span_id is not None:
                 spans.append(str(span_id))
         return _unique_preserving_order(spans)
 
     for item in evidence:
-        if isinstance(item, Mapping) and item.get("span_id") is not None:
-            spans.append(str(item.get("span_id")))
+        if isinstance(item, Mapping) and item.get("idx") is not None:
+            spans.append(str(item.get("idx")))
     return _unique_preserving_order(spans)
 
 
@@ -381,7 +381,7 @@ def _rank_agents(agent_scores: Mapping[str, float], agent_counts: Mapping[str, i
 
 def _rank_spans(span_scores: Mapping[str, float], span_counts: Mapping[str, int]) -> list[dict[str, Any]]:
     return [
-        {"span_id": span_id, "findings_count": int(span_counts.get(span_id, 0))}
+        {"idx": span_id, "findings_count": int(span_counts.get(span_id, 0))}
         for span_id, _score in sorted(
             span_scores.items(),
             key=lambda x: (-int(span_counts.get(x[0], 0)), -x[1], _span_sort_key(x[0])),
@@ -398,7 +398,7 @@ def _top_key(scores: Mapping[str, float]) -> str | None:
 def _first_span(problematic_spans: list[Mapping[str, Any]]) -> str | None:
     if not problematic_spans:
         return None
-    return min((str(item["span_id"]) for item in problematic_spans), key=_span_sort_key)
+    return min((str(item["idx"]) for item in problematic_spans), key=_span_sort_key)
 
 
 def _span_sort_key(span_id: str) -> tuple[int, int | str]:

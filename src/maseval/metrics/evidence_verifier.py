@@ -164,7 +164,7 @@ class EvidenceVerifier:
         evidence_item_checks = [r.check for r in evidence_resolutions]
         resolved_records = [r.record for r in evidence_resolutions if r.record is not None]
         checks = EvidenceChecks(
-            all_span_ids_exist=bool(finding.evidence) and all(i.span_exists for i in evidence_item_checks),
+            all_idxs_exist=bool(finding.evidence) and all(i.span_exists for i in evidence_item_checks),
             quotes_found_in_spans=bool(finding.evidence) and all(i.quote_found for i in evidence_item_checks),
             culprit_agent_matches_evidence=self._check_culprit_agent_matches(finding, resolved_records),
             span_roles_are_plausible=bool(finding.evidence) and all(i.role_plausible for i in evidence_item_checks),
@@ -213,7 +213,7 @@ class EvidenceVerifier:
             return EvidenceStatus.WEAK
 
         if (
-            not checks.all_span_ids_exist
+            not checks.all_idxs_exist
             or not checks.culprit_agent_matches_evidence
             or not checks.span_roles_are_plausible
             or finding.confidence_estimate == Confidence.LOW
@@ -237,7 +237,7 @@ class EvidenceVerifier:
             if value is False
         ]
         item_problems = [
-            f"evidence[{item.evidence_index}] {item.span_id}: {item.problem}"
+            f"evidence[{item.evidence_index}] {item.idx}: {item.problem}"
             for item in evidence_item_checks
             if item.problem
         ]
@@ -260,9 +260,9 @@ class EvidenceVerifier:
                 + item_details
             )
 
-        if "all_span_ids_exist" in failed and "quotes_found_in_spans" not in failed:
+        if "all_idxs_exist" in failed and "quotes_found_in_spans" not in failed:
             return (
-                "The quoted evidence was found in the raw trace, but at least one cited span_id "
+                "The quoted evidence was found in the raw trace, but at least one cited idx "
                 "is not resolvable in the normalized span index. Treat this finding as weak: "
                 "the text is grounded, but the step id needs normalization or prompt correction."
                 + item_details
@@ -289,7 +289,7 @@ class EvidenceVerifier:
         """
         resolved_items: list[_ResolvedEvidenceItem] = []
         for evidence_index, evidence in enumerate(finding.evidence):
-            span_id = str(evidence.span_id).strip()
+            span_id = str(evidence.idx).strip()
             role_plausible = (evidence.role or "").strip().lower() in self.allowed_roles
             quote = evidence.quote or ""
 
@@ -329,12 +329,12 @@ class EvidenceVerifier:
             problems: list[str] = []
             if not span_exists:
                 problems.append(
-                    "span_id could not be resolved and the quote was not found in the trace; "
+                    "idx could not be resolved and the quote was not found in the trace; "
                     "this is a gross grounding error"
                 )
             elif used_raw_trace_fallback:
                 problems.append(
-                    "span_id was resolved softly by locating the quote in raw trace text; "
+                    "idx was resolved softly by locating the quote in raw trace text; "
                     "exact message index may be off, but the evidence text is grounded"
                 )
             if not quote_found:
@@ -346,17 +346,17 @@ class EvidenceVerifier:
                 problems.append(f"unsupported evidence role: {evidence.role!r}")
             if span_exists and resolved_span_id != span_id:
                 problems.append(
-                    f"span_id {span_id!r} was resolved as {resolved_span_id!r} using {resolution_strategy}"
+                    f"idx {span_id!r} was resolved as {resolved_span_id!r} using {resolution_strategy}"
                 )
 
             check = EvidenceItemCheck(
                 evidence_index=evidence_index,
-                span_id=span_id,
+                idx=span_id,
                 span_exists=span_exists,
                 quote_found=quote_found,
                 role_plausible=role_plausible,
                 used_raw_trace_fallback=used_raw_trace_fallback,
-                resolved_span_id=resolved_span_id if resolved_span_id != span_id else None,
+                resolved_idx=resolved_span_id if resolved_span_id != span_id else None,
                 resolved_agent=record.agent if record is not None else None,
                 resolution_strategy=resolution_strategy,
                 problem="; ".join(problems) if problems else None,
@@ -662,7 +662,7 @@ class EvidenceVerifier:
 
         Supports the preferred format produced by the launcher (`[0] ...`) and
         looser forms such as `Message 0: ...` or `Step 1 - ...`. Numeric ids are
-        intended to be cited by LLM evaluators as `evidence[i].span_id`.
+        intended to be cited by LLM evaluators as `evidence[i].idx`.
         """
         for pattern in (self._INDEXED_TRACE_BLOCK_PATTERN, self._LOOSE_INDEXED_TRACE_BLOCK_PATTERN):
             for match in pattern.finditer(raw_trace):

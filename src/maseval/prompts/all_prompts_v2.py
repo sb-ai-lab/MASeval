@@ -14,7 +14,7 @@ _FINDINGS_OUTPUT_INSTRUCTIONS = """**Output Format** (STRICT — return ONLY one
       ],
       "evidence": [
         {
-          "span_id": "<message/step number from the trace, e.g. 0, 1, 2; strings are also OK>",
+          "idx": "<zero-based message/step number from the trace, e.g. 0, 1, 2; strings are also OK>",
           "role": "root_cause | propagation | contributing | context | final_effect | supporting | culprit | agent_output",
           "claim": "<what this evidence shows>",
           "quote": "<short exact quote copied from the trace>"
@@ -35,10 +35,10 @@ Conservative finding rules:
 - Every non-empty finding must contain at least one exact `quote` copied from the trace. If you cannot quote it, do not create the finding.
 
 Evidence citation rules:
-- The trace is shown as numbered messages/steps. Use that visible message number as `evidence[i].span_id`.
+- The trace is shown as numbered messages/steps. Use that visible message number as `evidence[i].idx`.
 - Message numbering starts from 0. If you are unsure whether the trace is zero-based or one-based, choose the closest message that contains the quote. The verifier tolerates +/-1.
-- `span_id` may be a JSON number (`29`) or a string (`"29"`). Both are valid.
-- Do NOT use agent names as `span_id`. Invalid: `WebSurfer`, `FileSurfer`, `Orchestrator`, `Orchestrator (thought)`, `Orchestrator (-> WebSurfer)`.
+- `idx` may be a JSON number (`29`) or a string (`"29"`). Both are valid.
+- Do NOT use agent names as `idx`. Invalid: `WebSurfer`, `FileSurfer`, `Orchestrator`, `Orchestrator (thought)`, `Orchestrator (-> WebSurfer)`.
 - Put agent names only in `culprit_agent_candidates[*].agent`.
 - The `quote` is more important than the exact index: copy the shortest exact text that proves the issue.
 - If a quote appears in several adjacent messages, cite the closest message index.
@@ -570,7 +570,7 @@ For EACH tool execution whose result quality is poor, produce one Finding. Examp
 - The output is mostly correct but misses a key part, contains a small inaccuracy, or is
   unclearly phrased in a way that degrades downstream use → severity "major".
 - A minor clarity / formatting issue with no real impact on usability → severity "minor".
-In `evidence[i].span_id` put the zero-based message/step index of the tool call; if a concrete `state_id` is shown, you may use it. In `culprit_agent_candidates`
+In `evidence[i].idx` put the zero-based message/step index of the tool call; if a concrete `state_id` is shown, you may use it. In `culprit_agent_candidates`
 list the agent that invoked the tool. If all tool outputs are correct and usable, return
 `findings: []`.
 
@@ -625,8 +625,8 @@ For EACH agent whose system prompt has a problem, produce one Finding. Examples:
   occasionally confuse the agent → severity "major".
 - The prompt has a minor ambiguity or a missing example with no observed impact on agent
   behaviour → severity "minor".
-In `evidence[i].span_id` put the zero-based message/step index; if a concrete `state_id`/`response_id` is shown, you may use it showing the problematic
-prompt or where the prompt defect manifested. Do not put a plain `agent_name` as `span_id`;
+In `evidence[i].idx` put the zero-based message/step index; if a concrete `state_id`/`response_id` is shown, you may use it showing the problematic
+prompt or where the prompt defect manifested. Do not put a plain `agent_name` as `idx`;
 put the agent name only in `culprit_agent_candidates`. If all prompts are clear and coherent,
 return `findings: []`.
 
