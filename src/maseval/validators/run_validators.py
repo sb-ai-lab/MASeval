@@ -27,7 +27,7 @@ def _norm_quote(quote: str) -> str:
 
 def run_on_trace(trace: Any) -> dict[str, Any]:
     fmt, spans = to_spans(trace)
-    span_meta = {s["span_id"]: (s.get("kind"), s.get("parent")) for s in spans}
+    span_meta = {s["idx"]: (s.get("kind"), s.get("parent")) for s in spans}
     raw: list[tuple[type, dict[str, Any]]] = []
     failed: list[str] = []
     for validator_cls in ALL_VALIDATORS:
@@ -42,14 +42,14 @@ def run_on_trace(trace: Any) -> dict[str, Any]:
     claimed: list[tuple[Any, int, int, type]] = []
     kept: list[tuple[type, dict[str, Any]]] = []
     for validator_cls, finding in raw:
-        span_id, start, end = finding.get("_match", (None, None, None))
+        idx, start, end = finding.get("_match", (None, None, None))
         if start is not None:
             if any(
-                s == span_id and vc is not validator_cls and start < ce and cs < end
+                s == idx and vc is not validator_cls and start < ce and cs < end
                 for (s, cs, ce, vc) in claimed
             ):
                 continue
-            claimed.append((span_id, start, end, validator_cls))
+            claimed.append((idx, start, end, validator_cls))
         kept.append((validator_cls, finding))
 
     metrics: dict[str, Any] = {}
@@ -87,7 +87,7 @@ def run_on_trace(trace: Any) -> dict[str, Any]:
         }
         dedup[key] = out
         metric["findings"].append(out)
-        primary = finding.get("_match", (None,))[0] or (evidence[0]["span_id"] if evidence else None)
+        primary = finding.get("_match", (None,))[0] or (evidence[0]["idx"] if evidence else None)
         indexed.append((validator_cls, name, finding["failure_type"], primary, _norm_quote(quote), out))
 
     _collapse_chain_into_tool(metrics, indexed, span_meta)

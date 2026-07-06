@@ -85,8 +85,8 @@ class EvidenceVerifier:
 
     # Common ids emitted by the current prompts / parsers.
     _RAW_ID_PATTERNS = (
-        re.compile(r'"(?:span_id|state_id|response_id|id)"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"'),
-        re.compile(r"\b(?:span|state|response)_[A-Za-z0-9_.:-]+\b"),
+        re.compile(r'"(?:idx|span_id|state_id|response_id|id)"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"'),
+        re.compile(r"\b(?:idx|span|state|response)_[A-Za-z0-9_.:-]+\b"),
         re.compile(r"\btw-\d+\b"),
         re.compile(r"\b[A-Za-z][A-Za-z0-9 .()/-]+_\d+\b"),
     )
