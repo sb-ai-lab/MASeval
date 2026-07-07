@@ -453,7 +453,7 @@ if __name__ == "__main__":
                 enable_tracing=True,
                 df=df_algo,
                 result_file_name="gemini_findings_",
-                folder_name="who&when_algo_gemini_findings_v9_report",
+                folder_name="who&when_algo_gemini_idx_msg_v2",
                 from_idx=from_idx,
             )
         if selected_run in ("hc", "both"):
@@ -462,7 +462,7 @@ if __name__ == "__main__":
                 enable_tracing=True,
                 df=df_hc,
                 result_file_name="gemini_findings_",
-                folder_name="who&when_hc_gemini_findings_v9_report",
+                folder_name="who&when_hand_gemini_idx_msg_v2",
                 from_idx=from_idx,
             )
 
