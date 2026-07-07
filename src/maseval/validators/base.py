@@ -347,27 +347,26 @@ def _flatten(obj: Any) -> str:
     return json.dumps(obj, ensure_ascii=False, default=str)
 
 
-def _trail_agent(node: dict) -> str | None:
-    """Extract the acting agent/tool name from a TRAIL span node.
+_AGENT_RUN_RE = re.compile(r"^([A-Za-z_]\w*Agent)\.run$")
+
+
+def _trail_own_agent(node: dict) -> str | None:
+    """Return the agent a TRAIL span explicitly identifies, else None.
 
     Args:
         node: A single TRAIL span dictionary.
 
     Returns:
-        str | None: The agent or tool name, or None if unavailable.
+        str | None: The agent named by this span, or None when it names none.
     """
     attrs = node.get("span_attributes")
     if isinstance(attrs, dict):
-        for key in (
-            "smolagents.managed_agents.0.name",
-            "agent.name",
-            "tool.name",
-        ):
+        for key in ("smolagents.managed_agents.0.name", "agent.name"):
             value = attrs.get(key)
             if value:
                 return str(value)
-    name = node.get("span_name")
-    return str(name) if name else None
+    match = _AGENT_RUN_RE.match(str(node.get("span_name") or ""))
+    return match.group(1) if match else None
 
 
 def _trail_text(node: dict) -> str:
@@ -436,20 +435,20 @@ def trail_to_spans(trace: dict) -> list[Span]:
     """
     spans: list[Span] = []
 
-    def visit(node: Any, parent_id: str | None) -> None:
+    def visit(node: Any, parent_id: str | None, inherited_agent: str | None) -> None:
         if not isinstance(node, dict):
             spans.append(
                 {
                     "idx": str(len(spans)),
                     "text": _flatten(node),
-                    "agent": None,
+                    "agent": inherited_agent,
                     "kind": None,
                     "parent": parent_id,
                 }
             )
             return
         span_id = str(node.get("span_id") or node.get("spanId") or node.get("id") or len(spans))
-        agent = _trail_agent(node)
+        agent = _trail_own_agent(node) or inherited_agent
         attrs = node.get("span_attributes")
         kind = (
             str(
@@ -469,10 +468,10 @@ def trail_to_spans(trace: dict) -> list[Span]:
             }
         )
         for child in node.get("child_spans") or []:
-            visit(child, span_id)
+            visit(child, span_id, agent)
 
     for sp in trace.get("spans", []):
-        visit(sp, None)
+        visit(sp, None, None)
     return spans
 
 
