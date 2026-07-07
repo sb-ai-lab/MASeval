@@ -42,24 +42,10 @@ _ERROR_SIGNAL = re.compile(
     re.IGNORECASE,
 )
 
-_WS_RUN = re.compile(r"(?:(?<!\\)\\[nrt]|\s)+")
-
-
 def _quote(text: str, start: int, end: int) -> str:
     a = max(0, start - QUOTE_RADIUS)
     b = min(len(text), end + QUOTE_RADIUS)
-    snippet = _WS_RUN.sub(" ", text[a:b]).strip()
-    if a > 0:
-        cut = snippet.find(" ")
-        if 0 <= cut <= 15:
-            snippet = snippet[cut + 1 :]
-        snippet = "…" + snippet
-    if b < len(text):
-        cut = snippet.rfind(" ")
-        if cut >= len(snippet) - 15:
-            snippet = snippet[:cut]
-        snippet = snippet + "…"
-    return snippet
+    return text[a:b]
 
 
 def runtime_exception_pattern(names: str) -> str:
@@ -257,13 +243,11 @@ class BaseValidator(ABC):
         else:
             # Offset-less check: anchor on the first error signal rather than the
             # span head (which is typically the re-fed prompt). Fall back to a
-            # cleaned head only when no signal is present.
             m = _ERROR_SIGNAL.search(text)
             if m:
                 quote = _quote(text, m.start(), m.end())
             else:
-                head = _WS_RUN.sub(" ", text[:QUOTE_FALLBACK]).strip()
-                quote = head + "…" if len(text) > QUOTE_FALLBACK else head
+                quote = text[:QUOTE_FALLBACK]
         return {
             "metric_name": metric_name,
             "explanation": explanation,
@@ -347,26 +331,27 @@ def _flatten(obj: Any) -> str:
     return json.dumps(obj, ensure_ascii=False, default=str)
 
 
-_AGENT_RUN_RE = re.compile(r"^([A-Za-z_]\w*Agent)\.run$")
-
-
-def _trail_own_agent(node: dict) -> str | None:
-    """Return the agent a TRAIL span explicitly identifies, else None.
+def _trail_agent(node: dict) -> str | None:
+    """Extract the acting agent/tool name from a TRAIL span node.
 
     Args:
         node: A single TRAIL span dictionary.
 
     Returns:
-        str | None: The agent named by this span, or None when it names none.
+        str | None: The agent or tool name, or None if unavailable.
     """
     attrs = node.get("span_attributes")
     if isinstance(attrs, dict):
-        for key in ("smolagents.managed_agents.0.name", "agent.name"):
+        for key in (
+            "smolagents.managed_agents.0.name",
+            "agent.name",
+            "tool.name",
+        ):
             value = attrs.get(key)
             if value:
                 return str(value)
-    match = _AGENT_RUN_RE.match(str(node.get("span_name") or ""))
-    return match.group(1) if match else None
+    name = node.get("span_name")
+    return str(name) if name else None
 
 
 def _trail_text(node: dict) -> str:
@@ -435,20 +420,20 @@ def trail_to_spans(trace: dict) -> list[Span]:
     """
     spans: list[Span] = []
 
-    def visit(node: Any, parent_id: str | None, inherited_agent: str | None) -> None:
+    def visit(node: Any, parent_id: str | None) -> None:
         if not isinstance(node, dict):
             spans.append(
                 {
                     "idx": str(len(spans)),
                     "text": _flatten(node),
-                    "agent": inherited_agent,
+                    "agent": None,
                     "kind": None,
                     "parent": parent_id,
                 }
             )
             return
         span_id = str(node.get("span_id") or node.get("spanId") or node.get("id") or len(spans))
-        agent = _trail_own_agent(node) or inherited_agent
+        agent = _trail_agent(node)
         attrs = node.get("span_attributes")
         kind = (
             str(
@@ -468,10 +453,10 @@ def trail_to_spans(trace: dict) -> list[Span]:
             }
         )
         for child in node.get("child_spans") or []:
-            visit(child, span_id, agent)
+            visit(child, span_id)
 
     for sp in trace.get("spans", []):
-        visit(sp, None, None)
+        visit(sp, None)
     return spans
 
 
