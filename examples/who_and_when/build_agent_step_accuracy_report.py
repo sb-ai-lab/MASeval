@@ -19,6 +19,7 @@ and a compact error-analysis table.
 
 from __future__ import annotations
 
+import glob
 import importlib.util
 import json
 import sys
@@ -61,8 +62,88 @@ _VERIFIER_POLICY = {
     "strict": "only 'verified' findings count; weak + invalid go to review",
     "soft": "verified/weak are counted; invalid findings are excluded and left for review",
 }
-DEFAULT_OUTPUT_JSON_PATH = "agent_step_metrics.json"
-DEFAULT_OUTPUT_MD_PATH = "agent_step_metrics.md"
+REPORTS_DIR = THIS_DIR / "reports"
+DEFAULT_OUTPUT_JSON_PATH = REPORTS_DIR / "agent_step_metrics.json"
+DEFAULT_OUTPUT_MD_PATH = REPORTS_DIR / "agent_step_metrics.md"
+
+# Named runs for the ``--run {hc,algo,both}`` entry point; all reports land in
+# ``reports/``.
+RUN_CONFIGS = {
+    "algo": {
+        "pred_glob": THIS_DIR / "who&when_algo_gemini_findings_v9_report",
+        "output_json_path": REPORTS_DIR / "agent_step_metrics_algo_gemini_v9_report.json",
+        "output_md_path": REPORTS_DIR / "agent_step_metrics_algo_gemini_v9_report.md",
+        "hf_annotations": "hf://datasets/Kevin355/Who_and_When/Algorithm-Generated.parquet",
+        "dataset_name": "Who&When / Algorithm-Generated",
+        "notes": "Built from the algorithm-generated findings run.",
+    },
+    "hc": {
+        "pred_glob": THIS_DIR / "who&when_hc_gemini_findings_v9_report",
+        "output_json_path": REPORTS_DIR / "agent_step_metrics_hc_gemini_v9_report.json",
+        "output_md_path": REPORTS_DIR / "agent_step_metrics_hc_gemini_v9_report.md",
+        "hf_annotations": DEFAULT_HF_ANNOTATIONS,
+        "dataset_name": "Who&When / Hand-Crafted",
+        "notes": "Built from the hand-crafted findings run.",
+    },
+}
+
+
+def _iter_pred_files(pred_glob) -> list[Path]:
+    """Resolve the prediction spec (glob str / dir / file / list) to JSON paths."""
+    specs = pred_glob if isinstance(pred_glob, (list, tuple)) else [pred_glob]
+    files: list[Path] = []
+    for spec in specs:
+        p = Path(spec)
+        if p.is_dir():
+            files.extend(sorted(p.glob("*.json")))
+        elif any(ch in str(spec) for ch in "*?["):
+            files.extend(sorted(Path(x) for x in glob.glob(str(spec))))
+        elif p.exists():
+            files.append(p)
+    return files
+
+
+def _collect_cost_timing(pred_glob) -> dict:
+    """Aggregate wall time + token usage from per-task ``task_stats`` and
+    per-metric ``metric_status`` recorded by the findings judge. Returns a dict
+    with run totals, a per-metric breakdown, and a failure-reason tally. Empty
+    (files_with_stats == 0) for runs produced before that instrumentation."""
+    files = _iter_pred_files(pred_glob)
+    totals = {
+        "files_total": len(files), "files_with_stats": 0, "wall_s": 0.0,
+        "input_tokens": 0, "output_tokens": 0, "total_tokens": 0,
+        "metrics_ok": 0, "metrics_failed": 0,
+    }
+    per_metric: dict[str, dict] = {}
+    fail_reasons: dict[str, int] = {}
+    for f in files:
+        try:
+            d = json.loads(Path(f).read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        ts = d.get("task_stats")
+        if ts:
+            totals["files_with_stats"] += 1
+            for k in ("wall_s", "input_tokens", "output_tokens", "total_tokens",
+                      "metrics_ok", "metrics_failed"):
+                totals[k] += ts.get(k) or 0
+        for name, st in (d.get("metric_status") or {}).items():
+            pm = per_metric.setdefault(name, {
+                "ok": 0, "failed": 0, "duration_s": 0.0,
+                "input_tokens": 0, "output_tokens": 0, "total_tokens": 0,
+            })
+            if st.get("status") == "ok":
+                pm["ok"] += 1
+            else:
+                pm["failed"] += 1
+                r = st.get("reason", "error")
+                fail_reasons[r] = fail_reasons.get(r, 0) + 1
+            for k in ("duration_s", "input_tokens", "output_tokens", "total_tokens"):
+                pm[k] += st.get(k) or 0
+    n = max(totals["files_with_stats"], 1)
+    totals["avg_wall_s_per_task"] = round(totals["wall_s"] / n, 2)
+    totals["avg_total_tokens_per_task"] = round(totals["total_tokens"] / n, 1)
+    return {"totals": totals, "per_metric": per_metric, "fail_reasons": fail_reasons}
 
 
 def main(
@@ -121,6 +202,10 @@ def main(
         verifier_mode=verifier_mode,
         print_summary=False,
     )
+
+    # Wall time + token usage recorded by the findings judge (task_stats /
+    # metric_status). Added to both the JSON result and the Markdown report.
+    result["cost_timing"] = _collect_cost_timing(pred_glob)
 
     report_args = {
         "experiment_name": experiment_name,
@@ -233,6 +318,8 @@ def build_markdown_report(result: dict[str, Any], args: dict[str, Any]) -> str:
     lines.append(f"| Step examples | {_md(summary.get('step_examples'))} |")
     lines.append("")
 
+    lines.extend(_build_cost_timing_section(result.get("cost_timing") or {}))
+
     lines.append("## Interpretation")
     lines.append("")
     lines.extend(_build_interpretation(summary))
@@ -274,6 +361,53 @@ def build_markdown_report(result: dict[str, Any], args: dict[str, Any]) -> str:
     lines.append("")
 
     return "\n".join(lines)
+
+
+def _build_cost_timing_section(cost_timing: dict[str, Any]) -> list[str]:
+    """Render the 'Cost & timing' section (run totals + per-metric breakdown)."""
+    tt = cost_timing.get("totals") or {}
+    if not tt.get("files_with_stats"):
+        return []  # run predates task_stats/metric_status instrumentation
+
+    lines: list[str] = ["## Cost & timing", ""]
+    lines.append("| Field | Value |")
+    lines.append("|---|---:|")
+    wall = tt.get("wall_s", 0) or 0
+    rows = [
+        ("Files with stats", f"{tt.get('files_with_stats')} / {tt.get('files_total')}"),
+        ("Total judge wall time", f"{wall:,.0f} s ({wall / 3600:.2f} h)"),
+        ("Avg wall time / task", f"{tt.get('avg_wall_s_per_task')} s"),
+        ("Input tokens", f"{tt.get('input_tokens', 0):,}"),
+        ("Output tokens", f"{tt.get('output_tokens', 0):,}"),
+        ("Total tokens", f"{tt.get('total_tokens', 0):,}"),
+        ("Avg total tokens / task", f"{tt.get('avg_total_tokens_per_task', 0):,.0f}"),
+        ("Metric evals (ok / failed)", f"{tt.get('metrics_ok')} / {tt.get('metrics_failed')}"),
+    ]
+    for key, value in rows:
+        lines.append(f"| {key} | {value} |")
+    fail_reasons = cost_timing.get("fail_reasons") or {}
+    if fail_reasons:
+        pretty = ", ".join(
+            f"{k}: {v}" for k, v in sorted(fail_reasons.items(), key=lambda x: -x[1])
+        )
+        lines.append(f"| Failure reasons | {pretty} |")
+    lines.append("")
+
+    per_metric = cost_timing.get("per_metric") or {}
+    if per_metric:
+        lines.append("### Per-metric cost & timing")
+        lines.append("")
+        lines.append("| Metric | ok | failed | total_s | avg_s | input_tok | output_tok |")
+        lines.append("|---|---:|---:|---:|---:|---:|---:|")
+        for name, d in sorted(per_metric.items(), key=lambda x: -(x[1].get("duration_s") or 0)):
+            calls = d["ok"] + d["failed"]
+            avg = (d["duration_s"] / calls) if calls else 0.0
+            lines.append(
+                f"| {name} | {d['ok']} | {d['failed']} | {d['duration_s']:.0f} | "
+                f"{avg:.1f} | {d['input_tokens']:,} | {d['output_tokens']:,} |"
+            )
+        lines.append("")
+    return lines
 
 
 def _build_interpretation(summary: dict[str, Any]) -> list[str]:
@@ -371,21 +505,32 @@ def _md(value: Any) -> str:
 
 
 if __name__ == "__main__":
-    result = main(
-        pred_glob=DEFAULT_PRED_GLOB,
-        output_json_path=DEFAULT_OUTPUT_JSON_PATH,
-        output_md_path=DEFAULT_OUTPUT_MD_PATH,
-        hf_annotations=DEFAULT_HF_ANNOTATIONS,
-        experiment_name=DEFAULT_EXPERIMENT_NAME,
-        model_name="Gemini",
-        dataset_name="Who&When / Hand-Crafted",
-        run_label="v9 report",
-        id_column=None,
-        agent_columns=None,
-        step_columns=None,
-        step_tolerance=1,
-        build_missing_report=True,
-        top_error_examples=20,
-        notes=None,
-        print_summary=True,
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Build Who&When agent-step accuracy reports.")
+    parser.add_argument(
+        "--run",
+        choices=("hc", "algo", "both"),
+        default="both",
+        help="Which report(s) to build (reads the matching findings folder).",
     )
+    args = parser.parse_args()
+
+    selected_runs = ("algo", "hc") if args.run == "both" else (args.run,)
+    for run_name in selected_runs:
+        run = RUN_CONFIGS[run_name]
+        main(
+            pred_glob=run["pred_glob"],
+            output_json_path=run["output_json_path"],
+            output_md_path=run["output_md_path"],
+            hf_annotations=run["hf_annotations"],
+            experiment_name=DEFAULT_EXPERIMENT_NAME,
+            model_name="Gemini",
+            dataset_name=run["dataset_name"],
+            run_label="v9 report",
+            step_tolerance=1,
+            build_missing_report=True,
+            top_error_examples=20,
+            notes=run["notes"],
+            print_summary=True,
+        )
