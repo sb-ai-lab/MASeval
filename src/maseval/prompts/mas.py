@@ -15,7 +15,7 @@ _FINDINGS_OUTPUT_INSTRUCTIONS = """**Output Format** (STRICT — return ONLY one
       ],
       "evidence": [
         {
-          "span_id": "<message/step number from the trace, e.g. 0, 1, 2; strings are also OK>",
+          "idx": "<zero-based message/step number from the trace, e.g. 0, 1, 2; strings are also OK>",
           "role": "root_cause | propagation | contributing | context | final_effect | supporting | culprit | agent_output",
           "claim": "<what this evidence shows>",
           "quote": "<short exact quote copied from the trace>"
@@ -36,10 +36,10 @@ Conservative finding rules:
 - Every non-empty finding must contain at least one exact `quote` copied from the trace. If you cannot quote it, do not create the finding.
 
 Evidence citation rules:
-- The trace is shown as numbered messages/steps. Use that visible message number as `evidence[i].span_id`.
+- The trace is shown as numbered messages/steps. Use that visible message number as `evidence[i].idx`.
 - Message numbering starts from 0. If you are unsure whether the trace is zero-based or one-based, choose the closest message that contains the quote. The verifier tolerates +/-1.
-- `span_id` may be a JSON number (`29`) or a string (`"29"`). Both are valid.
-- Do NOT use agent names as `span_id`. Invalid: `WebSurfer`, `FileSurfer`, `Orchestrator`, `Orchestrator (thought)`, `Orchestrator (-> WebSurfer)`.
+- `idx` may be a JSON number (`29`) or a string (`"29"`). Both are valid.
+- Do NOT use agent names as `idx`. Invalid: `WebSurfer`, `FileSurfer`, `Orchestrator`, `Orchestrator (thought)`, `Orchestrator (-> WebSurfer)`.
 - Put agent names only in `culprit_agent_candidates[*].agent`.
 - The `quote` is more important than the exact index: copy the shortest exact text that proves the issue.
 - If a quote appears in several adjacent messages, cite the closest message index.
@@ -82,7 +82,7 @@ For EACH structural problem with role distribution, produce one Finding. Example
 - Minor imbalance, one unclear responsibility boundary, or a small redundancy with limited
   impact → severity "minor".
 In `culprit_agent_candidates`, for MAS-level issues, list the agent(s) whose role design is
-the cause, or the closest responsible role (e.g., "system architect"). In `evidence[i].span_id`
+the cause, or the closest responsible role (e.g., "system architect"). In `evidence[i].idx`
 put the visible message number that shows the imbalance in action. Put agent names only in `culprit_agent_candidates`.
 If roles are well balanced,
 return `findings: []`.
@@ -121,7 +121,7 @@ For EACH problematic task transfer, produce one Finding. Examples:
   degrading but not destroying the outcome → severity "major".
 - Minor duplication, a small unnecessary restart, or a single unvalidated but harmless input
   → severity "minor".
-In `evidence[i].span_id` put the zero-based message/step index (or concrete `state_id`/`response_id`) of the offending handoff; add a
+In `evidence[i].idx` put the zero-based message/step index (or concrete `state_id`/`response_id`) of the offending handoff; add a
 second evidence entry for the propagation point if applicable. In `culprit_agent_candidates`
 list the upstream agent that originated the bad context and/or the downstream agent that
 accepted it unvalidated. If all transfers are seamless, return `findings: []`.
@@ -161,8 +161,8 @@ For EACH structural complexity problem, produce one Finding. Examples:
   real impact on this task → severity "minor".
 In `culprit_agent_candidates`, for MAS-level structural issues, list the closest responsible
 role (e.g., "system architect") or the agent whose design causes the problem. In
-`evidence[i].span_id` put a concrete `state_id`/`response_id` that demonstrates the issue.
-Do not put a plain `agent_name` as `span_id`; put agent names only in `culprit_agent_candidates`. If no explicit id is available, cite the zero-based message index.
+`evidence[i].idx` put a concrete `state_id`/`response_id` that demonstrates the issue.
+Do not put a plain `agent_name` as `idx`; put agent names only in `culprit_agent_candidates`. If no explicit id is available, cite the zero-based message index.
 If the complexity
 is appropriate, return `findings: []`.
 
@@ -207,9 +207,9 @@ For EACH flaw in the plan, produce one Finding. Examples:
 - A minor extraneous step, a small verbosity issue, or an unclear but functional step
   → severity "minor".
 In `culprit_agent_candidates` list the planning agent (the planner) that produced the flawed
-plan. In `evidence[i].span_id` put the zero-based message/step index or concrete `state_id`/`response_id` of the plan element (and, if
+plan. In `evidence[i].idx` put the zero-based message/step index or concrete `state_id`/`response_id` of the plan element (and, if
 the planner is identified, cite a concrete `state_id`/`response_id` produced by the planner).
-Do not put a plain `agent_name` as `span_id`. If no planning flaws are found, return
+Do not put a plain `agent_name` as `idx`. If no planning flaws are found, return
 `findings: []`.
 
 The evaluation input is provided via dependency injection. Access the dialogue history and agent responses from the evaluation input to perform your assessment.
@@ -258,7 +258,7 @@ Examples:
   not affect task usability → severity "minor".
 In `culprit_agent_candidates` list the agent(s) whose contribution caused the failure (e.g.,
 the agent that produced the wrong final answer, or the one that introduced a propagated
-error). In `evidence[i].span_id` put the zero-based message/step index or concrete `response_id`/`state_id` of the offending output
+error). In `evidence[i].idx` put the zero-based message/step index or concrete `response_id`/`state_id` of the offending output
 (and add a `propagation` evidence entry if the error cascaded). If the system fully and
 correctly completes the task, return `findings: []`.
 

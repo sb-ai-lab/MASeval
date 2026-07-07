@@ -5,7 +5,7 @@ The module consumes the JSON object produced by the findings evaluators plus
 
 * answer status: whether the final answer matches a reference, when available;
 * diagnostic status: severity counts, primary culprit, primary failure type;
-* diagnostic report: issue list, problematic agents, problematic spans, review targets.
+* diagnostic report: issue list, problematic agents, problematic idxs, review targets.
 
 The aggregation intentionally uses ``EvidenceVerifier`` as a gate. Findings with
 ``usable_for_diagnosis=false`` are not used for the main diagnostic counts, but
@@ -137,8 +137,8 @@ def build_evaluation_report(
     # They are intentionally not exposed in the public report schema.
     agent_scores: dict[str, float] = defaultdict(float)
     agent_counts: dict[str, int] = defaultdict(int)
-    span_scores: dict[str, float] = defaultdict(float)
-    span_counts: dict[str, int] = defaultdict(int)
+    idx_scores: dict[str, float] = defaultdict(float)
+    idx_counts: dict[str, int] = defaultdict(int)
     metric_scores: dict[str, float] = defaultdict(float)
     severity_counts: Counter[str] = Counter()
 
@@ -165,17 +165,17 @@ def build_evaluation_report(
                     agent_scores[agent] += base_score
                     agent_counts[agent] += 1
 
-                for span_id in finding_summary["problematic_spans"]:
-                    span_scores[span_id] += base_score
-                    span_counts[span_id] += 1
+                for idx_val in finding_summary["problematic_idxs"]:
+                    idx_scores[idx_val] += base_score
+                    idx_counts[idx_val] += 1
             else:
                 review_targets.append(finding_summary)
 
     problematic_agents = _rank_agents(agent_scores, agent_counts)
-    problematic_spans = _rank_spans(span_scores, span_counts)
+    problematic_idxs = _rank_idxs(idx_scores, idx_counts)
     primary_metric = _top_key(metric_scores)
     primary_culprit_agent = problematic_agents[0]["agent"] if problematic_agents else None
-    first_problem_span = _first_span(problematic_spans)
+    first_problem_idx = _first_idx(problematic_idxs)
 
     diagnostic_status = {
         "verdict": _diagnostic_verdict(issues, review_targets),
@@ -183,10 +183,10 @@ def build_evaluation_report(
         "major_issues": int(severity_counts.get("major", 0)),
         "minor_issues": int(severity_counts.get("minor", 0)),
         "problematic_agents_count": len(problematic_agents),
-        "problematic_spans_count": len(problematic_spans),
+        "problematic_idxs_count": len(problematic_idxs),
         "primary_failure_type": METRIC_TO_FAILURE_TYPE.get(primary_metric, primary_metric),
         "primary_culprit_agent": primary_culprit_agent,
-        "first_problem_span": first_problem_span,
+        "first_problem_idx": first_problem_idx,
     }
 
     review_required, review_reason = _review_status(answer_status, issues, review_targets)
@@ -202,7 +202,7 @@ def build_evaluation_report(
         },
         "diagnostic_report": {
             "problematic_agents": problematic_agents,
-            "problematic_spans": problematic_spans,
+            "problematic_idxs": problematic_idxs,
             "issues": issues,
             "review_targets": review_targets,
         },
@@ -304,7 +304,7 @@ def _summarize_finding(
         usable_for_diagnosis = False
 
     culprit_agents = _extract_culprit_agents(finding)
-    problematic_spans = _extract_problematic_spans(finding, evidence_item_checks)
+    problematic_idxs = _extract_problematic_idxs(finding, evidence_item_checks)
 
     return {
         "metric_name": metric_name,
@@ -314,7 +314,7 @@ def _summarize_finding(
         "evidence_status": evidence_status,
         "usable_for_diagnosis": usable_for_diagnosis,
         "culprit_agents": culprit_agents,
-        "problematic_spans": problematic_spans,
+        "problematic_idxs": problematic_idxs,
         "grounded_evidence_count": len(grounded_evidence_indices),
         "total_evidence_count": len(finding.get("evidence") or []),
         "problem_description": finding.get("problem_description"),
@@ -335,32 +335,30 @@ def _extract_culprit_agents(finding: Mapping[str, Any]) -> list[str]:
     return _unique_preserving_order(agents)
 
 
-def _extract_problematic_spans(
+def _extract_problematic_idxs(
     finding: Mapping[str, Any],
     evidence_item_checks: list[Any],
 ) -> list[str]:
-    spans: list[str] = []
+    idxs: list[str] = []
     evidence = finding.get("evidence") or []
 
     if evidence_item_checks:
         for item in evidence_item_checks:
             if not isinstance(item, Mapping):
                 continue
-            # Use grounded citations for primary span lists. Missing citations are
+            # Use grounded citations for primary idx lists. Missing citations are
             # kept in review_targets through the full issue summary.
-            if not (item.get("quote_found") or item.get("span_exists")):
+            if not (item.get("quote_found") or item.get("idx_exists")):
                 continue
-            span_id = item.get("resolved_span_id") or item.get("span_id") or item.get("resolved_idx") or item.get("idx")
-            if span_id is not None:
-                spans.append(str(span_id))
-        return _unique_preserving_order(spans)
+            idx_val = item.get("resolved_idx") or item.get("idx")
+            if idx_val is not None:
+                idxs.append(str(idx_val))
+        return _unique_preserving_order(idxs)
 
     for item in evidence:
-        if isinstance(item, Mapping):
-            span_id = item.get("span_id") or item.get("idx")
-            if span_id is not None:
-                spans.append(str(span_id))
-    return _unique_preserving_order(spans)
+        if isinstance(item, Mapping) and item.get("idx") is not None:
+            idxs.append(str(item.get("idx")))
+    return _unique_preserving_order(idxs)
 
 
 def _issue_score(issue: Mapping[str, Any]) -> float:
@@ -381,12 +379,12 @@ def _rank_agents(agent_scores: Mapping[str, float], agent_counts: Mapping[str, i
     ]
 
 
-def _rank_spans(span_scores: Mapping[str, float], span_counts: Mapping[str, int]) -> list[dict[str, Any]]:
+def _rank_idxs(idx_scores: Mapping[str, float], idx_counts: Mapping[str, int]) -> list[dict[str, Any]]:
     return [
-        {"span_id": span_id, "findings_count": int(span_counts.get(span_id, 0))}
-        for span_id, _score in sorted(
-            span_scores.items(),
-            key=lambda x: (-int(span_counts.get(x[0], 0)), -x[1], _span_sort_key(x[0])),
+        {"idx": idx_val, "findings_count": int(idx_counts.get(idx_val, 0))}
+        for idx_val, _score in sorted(
+            idx_scores.items(),
+            key=lambda x: (-int(idx_counts.get(x[0], 0)), -x[1], _idx_sort_key(x[0])),
         )
     ]
 
@@ -397,14 +395,14 @@ def _top_key(scores: Mapping[str, float]) -> str | None:
     return max(scores.items(), key=lambda x: (x[1], x[0]))[0]
 
 
-def _first_span(problematic_spans: list[Mapping[str, Any]]) -> str | None:
-    if not problematic_spans:
+def _first_idx(problematic_idxs: list[Mapping[str, Any]]) -> str | None:
+    if not problematic_idxs:
         return None
-    return min((str(item["span_id"]) for item in problematic_spans), key=_span_sort_key)
+    return min((str(item["idx"]) for item in problematic_idxs), key=_idx_sort_key)
 
 
-def _span_sort_key(span_id: str) -> tuple[int, int | str]:
-    text = str(span_id)
+def _idx_sort_key(idx_val: str) -> tuple[int, int | str]:
+    text = str(idx_val)
     if text.isdigit():
         return (0, int(text))
     match = re.search(r"(\d+)", text)

@@ -63,7 +63,7 @@ def test_trail_to_spans_walks_tree_with_parent_and_kind():
     }
     fmt, spans = to_spans(trace)
     assert fmt == "trail"
-    by_id = {s["span_id"]: s for s in spans}
+    by_id = {s["idx"]: s for s in spans}
     assert set(by_id) == {"root", "child"}
     assert by_id["root"]["parent"] is None
     assert by_id["child"]["parent"] == "root"

@@ -4,8 +4,8 @@ The module compares per-trace diagnostic JSON files with human annotations and
 computes two simple localization metrics:
 
 * Agent accuracy: did the predicted culprit agent match the annotated agent?
-* Step-level accuracy: did the predicted problematic span/step match the
-  annotated step/span?
+* Step-level accuracy: did the predicted problematic idx/step match the
+  annotated step/idx?
 
 The implementation intentionally reads the compact ``report`` produced by
 ``maseval.reporting`` when it is present. This means findings rejected by
@@ -74,18 +74,28 @@ STEP_COLUMNS = (
     "problematic_steps",
     "problematic_span",
     "problematic_spans",
+    "problematic_idx",
+    "problematic_idxs",
     "gold_step",
     "gold_steps",
     "gold_span",
     "gold_spans",
+    "gold_idx",
+    "gold_idxs",
     "annotated_step",
     "annotated_steps",
     "annotated_span",
     "annotated_spans",
+    "annotated_idx",
+    "annotated_idxs",
     "step_id",
     "step_ids",
     "span_id",
     "span_ids",
+    "idx",
+    "idxs",
+    "idx_id",
+    "idx_ids",
 )
 
 ID_COLUMNS = (
@@ -123,8 +133,8 @@ class PredictionRecord:
     example_id: str | None
     agents: list[str]
     primary_agent: str | None
-    spans: list[str]
-    first_span: str | None
+    idxs: list[str]
+    first_idx: str | None
     invalid_findings_count: int
 
 
@@ -135,7 +145,7 @@ class AnnotationRecord:
     example_id: str | None
     row_index: int
     agents: list[str]
-    spans: list[str]
+    idxs: list[str]
     raw: dict[str, Any]
 
 
@@ -152,9 +162,9 @@ class ExampleComparison:
     agent_top1_correct: bool | None
     agent_hit_correct: bool | None
     agent_exact_set_correct: bool | None
-    gold_spans: list[str]
-    predicted_spans: list[str]
-    first_span: str | None
+    gold_idxs: list[str]
+    predicted_idxs: list[str]
+    first_idx: str | None
     step_top1_correct: bool | None
     step_hit_correct: bool | None
     step_hit_pm1_correct: bool | None
@@ -171,9 +181,9 @@ class ExampleComparison:
             "agent_top1_correct": self.agent_top1_correct,
             "agent_hit_correct": self.agent_hit_correct,
             "agent_exact_set_correct": self.agent_exact_set_correct,
-            "gold_spans": self.gold_spans,
-            "predicted_spans": self.predicted_spans,
-            "first_span": self.first_span,
+            "gold_idxs": self.gold_idxs,
+            "predicted_idxs": self.predicted_idxs,
+            "first_idx": self.first_idx,
             "step_top1_correct": self.step_top1_correct,
             "step_hit_correct": self.step_hit_correct,
             "step_hit_pm1_correct": self.step_hit_pm1_correct,
@@ -284,15 +294,13 @@ def read_prediction_file(
     if primary_agent and primary_agent not in agents:
         agents.insert(0, primary_agent)
 
-    problematic_spans = diagnostic_report.get("problematic_spans") or []
-    problematic_spans = list(problematic_spans) + list(diagnostic_report.get("problematic_idxs") or [])
-    spans = _unique_preserve_order(
-        _extract_named_values(problematic_spans, key="span_id")
-        + _extract_named_values(problematic_spans, key="idx")
+    problematic_idxs = diagnostic_report.get("problematic_idxs") or []
+    idxs = _unique_preserve_order(
+        _extract_named_values(problematic_idxs, key="idx")
     )
-    first_span = _clean_scalar(diagnostic_status.get("first_problem_span") or diagnostic_status.get("first_problem_idx"))
-    if first_span and first_span not in spans:
-        spans.insert(0, first_span)
+    first_idx = _clean_scalar(diagnostic_status.get("first_problem_idx"))
+    if first_idx and first_idx not in idxs:
+        idxs.insert(0, first_idx)
 
     # Fallback to issues if the report omits pre-aggregated lists. These are
     # already EvidenceVerifier-gated by report construction, so invalid findings
@@ -304,17 +312,17 @@ def read_prediction_file(
             for issue in issues
             for value in _as_list(issue.get("culprit_agents"))
         )
-    if not spans:
-        spans = _unique_preserve_order(
+    if not idxs:
+        idxs = _unique_preserve_order(
             value
             for issue in issues
-            for value in (_as_list(issue.get("problematic_spans")) + _as_list(issue.get("problematic_idxs")))
+            for value in _as_list(issue.get("problematic_idxs"))
         )
 
     if primary_agent is None and agents:
         primary_agent = agents[0]
-    if first_span is None and spans:
-        first_span = spans[0]
+    if first_idx is None and idxs:
+        first_idx = idxs[0]
 
     review_targets = diagnostic_report.get("review_targets") or []
     invalid_findings_count = sum(
@@ -329,8 +337,8 @@ def read_prediction_file(
         example_id=_infer_prediction_id(data, file_path),
         agents=agents,
         primary_agent=primary_agent,
-        spans=spans,
-        first_span=first_span,
+        idxs=idxs,
+        first_idx=first_idx,
         invalid_findings_count=invalid_findings_count,
     )
 
@@ -357,13 +365,13 @@ def read_annotations(
         normalized_row = {str(k): v for k, v in row.items()}
         example_id = _infer_annotation_id(normalized_row, row_index, id_column=id_column)
         agents = _extract_annotation_values(normalized_row, agent_columns)
-        spans = _extract_annotation_values(normalized_row, step_columns)
+        idxs = _extract_annotation_values(normalized_row, step_columns)
         records.append(
             AnnotationRecord(
                 example_id=example_id,
                 row_index=row_index,
                 agents=agents,
-                spans=spans,
+                idxs=idxs,
                 raw=normalized_row,
             )
         )
@@ -393,22 +401,22 @@ def compare_prediction_to_annotation(
         agent_hit_correct = any(agent in gold_agents_norm for agent in pred_agents_norm)
         agent_exact_set_correct = set(pred_agents_norm) == gold_agents_norm
 
-    has_gold_spans = bool(annotation.spans)
+    has_gold_idxs = bool(annotation.idxs)
     step_top1_correct = None
     step_hit_correct = None
     step_hit_pm1_correct = None
-    if has_gold_spans:
+    if has_gold_idxs:
         step_top1_correct = bool(
-            prediction.first_span
-            and _span_matches_any(prediction.first_span, annotation.spans, tolerance=0)
+            prediction.first_idx
+            and _idx_matches_any(prediction.first_idx, annotation.idxs, tolerance=0)
         )
         step_hit_correct = any(
-            _span_matches_any(span, annotation.spans, tolerance=0)
-            for span in prediction.spans
+            _idx_matches_any(idx_val, annotation.idxs, tolerance=0)
+            for idx_val in prediction.idxs
         )
         step_hit_pm1_correct = any(
-            _span_matches_any(span, annotation.spans, tolerance=step_tolerance)
-            for span in prediction.spans
+            _idx_matches_any(idx_val, annotation.idxs, tolerance=step_tolerance)
+            for idx_val in prediction.idxs
         )
 
     return ExampleComparison(
@@ -421,9 +429,9 @@ def compare_prediction_to_annotation(
         agent_top1_correct=agent_top1_correct,
         agent_hit_correct=agent_hit_correct,
         agent_exact_set_correct=agent_exact_set_correct,
-        gold_spans=annotation.spans,
-        predicted_spans=prediction.spans,
-        first_span=prediction.first_span,
+        gold_idxs=annotation.idxs,
+        predicted_idxs=prediction.idxs,
+        first_idx=prediction.first_idx,
         step_top1_correct=step_top1_correct,
         step_hit_correct=step_hit_correct,
         step_hit_pm1_correct=step_hit_pm1_correct,
@@ -679,29 +687,29 @@ def _normalize_agent(agent: Any) -> str:
     return re.sub(r"[^a-z0-9]", "", text.lower())
 
 
-def _normalize_span(span: Any) -> str:
-    text = _clean_scalar(span) or ""
+def _normalize_idx(idx_val: Any) -> str:
+    text = _clean_scalar(idx_val) or ""
     return re.sub(r"\s+", "", text.lower())
 
 
-def _span_number(span: Any) -> int | None:
-    text = _clean_scalar(span)
+def _idx_number(idx_val: Any) -> int | None:
+    text = _clean_scalar(idx_val)
     if text is None:
         return None
-    # Handles "17", "span_0017", "message[17]". For non-numeric ids, exact
+    # Handles "17", "idx_0017", "message[17]". For non-numeric ids, exact
     # normalized string matching is used instead.
     matches = re.findall(r"\d+", text)
     return int(matches[-1]) if matches else None
 
 
-def _span_matches_any(pred_span: Any, gold_spans: Iterable[Any], *, tolerance: int) -> bool:
-    pred_norm = _normalize_span(pred_span)
-    pred_num = _span_number(pred_span)
-    for gold in gold_spans:
-        gold_norm = _normalize_span(gold)
+def _idx_matches_any(pred_idx: Any, gold_idxs: Iterable[Any], *, tolerance: int) -> bool:
+    pred_norm = _normalize_idx(pred_idx)
+    pred_num = _idx_number(pred_idx)
+    for gold in gold_idxs:
+        gold_norm = _normalize_idx(gold)
         if pred_norm and pred_norm == gold_norm:
             return True
-        gold_num = _span_number(gold)
+        gold_num = _idx_number(gold)
         if pred_num is not None and gold_num is not None:
             if abs(pred_num - gold_num) <= tolerance:
                 return True

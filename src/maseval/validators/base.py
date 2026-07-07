@@ -17,7 +17,7 @@ Finding = dict[str, Any]
 class Span(TypedDict):
     """A normalized unit of a trace fed to the validators."""
 
-    span_id: str
+    idx: str
     text: str
     agent: str | None
     kind: NotRequired[str | None]
@@ -272,7 +272,7 @@ class BaseValidator(ABC):
             "severity": severity_for(failure_type),
             "evidence": [
                 {
-                    "span_id": span["span_id"],
+                    "idx": span["idx"],
                     "agent": span.get("agent"),
                     "quote": quote,
                 }
@@ -280,7 +280,7 @@ class BaseValidator(ABC):
             # Internal-only (never emitted to output): (span_id, match_start, match_end)
             # used by the runner for cross-validator overlap dedup. Offsets are None for
             # offset-less checks (e.g. the JSON-parse check).
-            "_match": (span["span_id"], start, end),
+            "_match": (span["idx"], start, end),
         }
 
 
@@ -440,7 +440,7 @@ def trail_to_spans(trace: dict) -> list[Span]:
         if not isinstance(node, dict):
             spans.append(
                 {
-                    "span_id": str(len(spans)),
+                    "idx": str(len(spans)),
                     "text": _flatten(node),
                     "agent": None,
                     "kind": None,
@@ -461,7 +461,7 @@ def trail_to_spans(trace: dict) -> list[Span]:
         )
         spans.append(
             {
-                "span_id": span_id,
+                "idx": span_id,
                 "text": _trail_text(node),
                 "agent": agent,
                 "kind": kind,
@@ -530,7 +530,7 @@ def who_and_when_to_spans(trace: Any) -> list[Span]:
     spans: list[Span] = []
     for i, st in enumerate(steps):
         if not isinstance(st, dict):
-            spans.append({"span_id": str(i), "text": _flatten(st), "agent": None})
+            spans.append({"idx": str(i), "text": _flatten(st), "agent": None})
             continue
         if chat_only:
             agent = st.get("mistake_agent") or st.get("agent")
@@ -548,7 +548,7 @@ def who_and_when_to_spans(trace: Any) -> list[Span]:
             text = " ".join(p for p in parts if p)
         else:
             text = _flatten(st)
-        spans.append({"span_id": str(i), "text": text, "agent": agent})
+        spans.append({"idx": str(i), "text": text, "agent": agent})
     return spans
 
 
@@ -599,7 +599,7 @@ def pumpkin_to_spans(trace: dict) -> list[Span]:
     spans: list[Span] = []
     for i, obs in enumerate(obs_sorted):
         if not isinstance(obs, dict):
-            spans.append({"span_id": str(i), "text": _flatten(obs), "agent": None})
+            spans.append({"idx": str(i), "text": _flatten(obs), "agent": None})
             continue
         span_id = obs.get("id") or str(i)
         agent = _clean_pumpkin_agent(obs.get("name"))
@@ -610,7 +610,7 @@ def pumpkin_to_spans(trace: dict) -> list[Span]:
             _flatten(obs.get("output")),
         ]
         text = " ".join(p for p in parts if p)
-        spans.append({"span_id": str(span_id), "text": text, "agent": agent})
+        spans.append({"idx": str(span_id), "text": text, "agent": agent})
     return spans
 
 
@@ -644,7 +644,7 @@ def unknown_to_spans(trace: Any) -> list[Span]:
     else:
         objects = [trace]
     return [
-        {"span_id": str(i), "text": _flatten(o), "agent": None}
+        {"idx": str(i), "text": _flatten(o), "agent": None}
         for i, o in enumerate(objects)
     ]
 

@@ -64,6 +64,8 @@ def _coerce_history_to_steps(history) -> list:
         return history
     if isinstance(history, tuple):
         return list(history)
+    if hasattr(history, "tolist"):  # numpy ndarray / pandas array from read_parquet
+        return list(history.tolist())
     if isinstance(history, str):
         text = history.strip()
         for parser in (ast.literal_eval, json.loads):
@@ -111,7 +113,7 @@ def _format_trace_step(step) -> str:
 def _format_indexed_raw_trace(history, question) -> str:
     """Format raw traces with stable zero-based message indices.
 
-    LLM evaluators can cite these indices in `evidence[i].span_id` when no
+    LLM evaluators can cite these indices in `evidence[i].idx` when no
     explicit state_id/response_id is available. EvidenceVerifier then maps
     `[0]`, `[1]`, ... blocks back to the quoted text.
     """
@@ -120,7 +122,7 @@ def _format_indexed_raw_trace(history, question) -> str:
         "USER QUESTION:",
         str(question),
         "",
-        "TRACE MESSAGES (zero-based indices; cite these numbers in evidence[i].span_id):",
+        "TRACE MESSAGES (zero-based indices; cite these numbers in evidence[i].idx):",
     ]
     for i, step in enumerate(steps):
         lines.append(f"[{i}] {_format_trace_step(step)}")
