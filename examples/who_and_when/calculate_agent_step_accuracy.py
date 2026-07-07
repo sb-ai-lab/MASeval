@@ -50,8 +50,8 @@ except Exception:  # pragma: no cover - allows running without optional package 
 
 
 DEFAULT_PRED_GLOB = (
-    "/home/alina/Desktop/maseval-research/examples/who_and_when/"
-    "who&when_hand_gemini_findings_v9_report/*.json"
+    "/home/alina/Desktop/MASeval/examples/who_and_when/"
+    "who&when_hand_gemini_idx_msg_v2/*.json"
 )
 
 DEFAULT_HF_ANNOTATIONS = "hf://datasets/Kevin355/Who_and_When/Hand-Crafted.parquet"
