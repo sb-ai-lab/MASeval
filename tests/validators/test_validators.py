@@ -47,7 +47,7 @@ def test_detect_format_trail():
 # provider HTTP 429 rate limit
 def test_provider_429_positive():
     span = {
-        "span_id": "s1",
+        "idx": "s1",
         "text": (
             "openai.RateLimitError: Error code: 429 - "
             "{'error': {'message': 'Rate limit reached for gpt-4o; "
@@ -61,7 +61,7 @@ def test_provider_429_positive():
 
 def test_provider_429_not_from_prompt_negative():
     span = {
-        "span_id": "s1",
+        "idx": "s1",
         "text": (
             "The marketing dashboard shows we served 429 customers today, "
             "up from 380 yesterday. Summarize the growth trend."
@@ -86,7 +86,7 @@ def test_provider_429_not_from_prompt_negative():
 )
 def test_api_not_found_negative_for_plain_text():
     span = {
-        "span_id": "s1",
+        "idx": "s1",
         "text": "I searched every document but I have not found the answer to your question.",
         "agent": "Assistant",
     }
@@ -97,7 +97,7 @@ def test_api_not_found_negative_for_plain_text():
 # tool JSON-shaped output that does not parse
 def test_tool_json_parse_positive():
     span = {
-        "span_id": "s1",
+        "idx": "s1",
         "text": '{"status": "ok", "items": [1, 2, 3',
         "agent": "search_tool",
     }
@@ -108,7 +108,7 @@ def test_tool_json_parse_positive():
 # environment missing file
 def test_environment_file_not_found_positive():
     span = {
-        "span_id": "s1",
+        "idx": "s1",
         "text": (
             "Traceback (most recent call last):\n"
             "FileNotFoundError: [Errno 2] No such file or directory: "

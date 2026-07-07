@@ -4,7 +4,7 @@ from maseval.validators import ToolSchemaValidator
 
 
 def _types(text: str) -> set[str]:
-    span = {"span_id": "s", "text": text, "agent": None}
+    span = {"idx": "s", "text": text, "agent": None}
     return {f["failure_type"] for f in ToolSchemaValidator().run([span])}
 
 

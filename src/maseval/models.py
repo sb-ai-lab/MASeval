@@ -197,22 +197,22 @@ class CulpritAgentCandidate(BaseModel):
 class Evidence(BaseModel):
     """A piece of evidence supporting a finding.
 
-    `span_id` should point to a concrete trace item. Preferred format for raw
-    traces is a zero-based message/step index, e.g. `"0"`, `"1"`, `"2"`.
-    If the trace already exposes stable ids, `span_id` may also be a `state_id`,
-    `response_id`, `policy_id`, or a tool-call id. It should not be a plain
-    agent name like `WebSurfer` or a descriptive pseudo-id like
-    `Orchestrator (thought)`.
+    ``idx`` should point to a concrete trace item. Preferred format for raw
+    traces is a zero-based message/step index, e.g. ``"0"``, ``"1"``, ``"2"``.
+    If the trace already exposes stable ids, ``idx`` may also be a ``state_id``,
+    ``response_id``, ``policy_id``, or a tool-call id. It should not be a plain
+    agent name like ``WebSurfer`` or a descriptive pseudo-id like
+    ``Orchestrator (thought)``.
     """
 
-    span_id: str
+    idx: str
     role: str  # free-form evidence role, e.g. root_cause / propagation / context
     claim: str
     quote: str
 
-    @field_validator("span_id", mode="before")
+    @field_validator("idx", mode="before")
     @classmethod
-    def _coerce_span_id_to_string(cls, value: Any) -> str:
+    def _coerce_idx_to_string(cls, value: Any) -> str:
         """Accept JSON numbers from LLM outputs and normalize them to strings."""
         return str(value)
 
@@ -254,10 +254,10 @@ class EvidenceStatus(str, Enum):
 class EvidenceChecks(BaseModel):
     """Deterministic checks applied to evidence cited by an LLM evaluator."""
 
-    all_span_ids_exist: bool
-    quotes_found_in_spans: bool
+    all_idxs_exist: bool
+    quotes_found_in_idxs: bool
     culprit_agent_matches_evidence: bool
-    span_roles_are_plausible: bool
+    idx_roles_are_plausible: bool
 
 
 
@@ -270,12 +270,12 @@ class EvidenceItemCheck(BaseModel):
     """
 
     evidence_index: int
-    span_id: str
-    span_exists: bool
+    idx: str
+    idx_exists: bool
     quote_found: bool
     role_plausible: bool
     used_raw_trace_fallback: bool = False
-    resolved_span_id: str | None = None
+    resolved_idx: str | None = None
     resolved_agent: str | None = None
     resolution_strategy: str | None = None
     problem: str | None = None
