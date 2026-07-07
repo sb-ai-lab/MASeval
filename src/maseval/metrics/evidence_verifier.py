@@ -3,8 +3,8 @@
 EvidenceVerifier does not decide whether an LLM finding is semantically correct.
 It only checks whether the finding is grounded in the provided trace:
 
-* cited span ids or zero-based message indices exist;
-* quoted evidence can be found in the cited spans;
+* cited idxs or zero-based message indices exist;
+* quoted evidence can be found in the cited idxs;
 * culprit-agent candidates are at least compatible with the cited evidence;
 * evidence roles use an expected vocabulary.
 
@@ -35,13 +35,13 @@ from ..models import (
 
 
 @dataclass(frozen=True)
-class _SpanRecord:
+class _IdxRecord:
     """Internal normalized view of one trace item that can be cited as evidence."""
 
-    span_id: str
+    idx: str
     content: str
     agent: str | None = None
-    span_type: str | None = None
+    idx_type: str | None = None
 
 
 
@@ -51,7 +51,7 @@ class _ResolvedEvidenceItem:
     """Internal resolution result for one cited evidence item."""
 
     check: EvidenceItemCheck
-    record: _SpanRecord | None = None
+    record: _IdxRecord | None = None
 
 class EvidenceVerifier:
     """Verify whether LLM evaluator findings are trace-grounded.
@@ -59,7 +59,7 @@ class EvidenceVerifier:
     Parameters:
         allowed_roles: Accepted evidence roles. This is intentionally small and
             explicit, but can be extended per project.
-        allow_agent_name_as_span_id: If True, agent names are accepted as
+        allow_agent_name_as_idx: If True, agent names are accepted as
             citeable ids. Defaults to False because MASQUE Studio should prefer
             concrete step/message indices or state/response ids over agent-level references.
     """
@@ -85,8 +85,8 @@ class EvidenceVerifier:
 
     # Common ids emitted by the current prompts / parsers.
     _RAW_ID_PATTERNS = (
-        re.compile(r'"(?:span_id|state_id|response_id|id)"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"'),
-        re.compile(r"\b(?:span|state|response)_[A-Za-z0-9_.:-]+\b"),
+        re.compile(r'"(?:idx|span_id|state_id|response_id|id)"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"'),
+        re.compile(r"\b(?:idx|span|state|response)_[A-Za-z0-9_.:-]+\b"),
         re.compile(r"\btw-\d+\b"),
         re.compile(r"\b[A-Za-z][A-Za-z0-9 .()/-]+_\d+\b"),
     )
@@ -101,10 +101,10 @@ class EvidenceVerifier:
     def __init__(
         self,
         allowed_roles: set[str] | None = None,
-        allow_agent_name_as_span_id: bool = False,
+        allow_agent_name_as_idx: bool = False,
     ):
         self.allowed_roles = {r.lower() for r in (allowed_roles or self.DEFAULT_ALLOWED_ROLES)}
-        self.allow_agent_name_as_span_id = allow_agent_name_as_span_id
+        self.allow_agent_name_as_idx = allow_agent_name_as_idx
 
     def verify_metric_result(
         self,
@@ -114,7 +114,7 @@ class EvidenceVerifier:
         """Verify all findings for one metric."""
 
         metric_result = self._coerce_metric_result(metric_result)
-        span_index = self._build_span_index(eval_input)
+        idx_index = self._build_idx_index(eval_input)
         raw_trace_text = self._raw_trace_text(eval_input)
 
         verifications = [
@@ -122,7 +122,7 @@ class EvidenceVerifier:
                 metric_name=metric_result.metric_name,
                 finding=finding,
                 finding_index=i,
-                span_index=span_index,
+                idx_index=idx_index,
                 raw_trace_text=raw_trace_text,
             )
             for i, finding in enumerate(metric_result.findings)
@@ -151,23 +151,23 @@ class EvidenceVerifier:
         metric_name: str,
         finding: Finding,
         finding_index: int,
-        span_index: Mapping[str, _SpanRecord],
+        idx_index: Mapping[str, _IdxRecord],
         raw_trace_text: str | None = None,
     ) -> EvidenceVerificationResult:
         """Verify one LLM finding."""
 
         evidence_resolutions = self._resolve_evidence_items(
             finding=finding,
-            span_index=span_index,
+            idx_index=idx_index,
             raw_trace_text=raw_trace_text,
         )
         evidence_item_checks = [r.check for r in evidence_resolutions]
         resolved_records = [r.record for r in evidence_resolutions if r.record is not None]
         checks = EvidenceChecks(
-            all_span_ids_exist=bool(finding.evidence) and all(i.span_exists for i in evidence_item_checks),
-            quotes_found_in_spans=bool(finding.evidence) and all(i.quote_found for i in evidence_item_checks),
+            all_idxs_exist=bool(finding.evidence) and all(i.idx_exists for i in evidence_item_checks),
+            quotes_found_in_idxs=bool(finding.evidence) and all(i.quote_found for i in evidence_item_checks),
             culprit_agent_matches_evidence=self._check_culprit_agent_matches(finding, resolved_records),
-            span_roles_are_plausible=bool(finding.evidence) and all(i.role_plausible for i in evidence_item_checks),
+            idx_roles_are_plausible=bool(finding.evidence) and all(i.role_plausible for i in evidence_item_checks),
         )
         evidence_status = self._status_from_items(finding, checks, evidence_item_checks)
         # In the soft verifier, WEAK means "grounded enough to inspect/use,"
@@ -213,9 +213,9 @@ class EvidenceVerifier:
             return EvidenceStatus.WEAK
 
         if (
-            not checks.all_span_ids_exist
+            not checks.all_idxs_exist
             or not checks.culprit_agent_matches_evidence
-            or not checks.span_roles_are_plausible
+            or not checks.idx_roles_are_plausible
             or finding.confidence_estimate == Confidence.LOW
             or finding.needs_human_review
         ):
@@ -229,7 +229,7 @@ class EvidenceVerifier:
         evidence_item_checks: list[EvidenceItemCheck],
     ) -> str:
         if status == EvidenceStatus.VERIFIED:
-            return "All cited spans exist, quoted evidence matches the trace, and the finding is usable for diagnosis."
+            return "All cited idxs exist, quoted evidence matches the trace, and the finding is usable for diagnosis."
 
         failed = [
             name
@@ -237,14 +237,14 @@ class EvidenceVerifier:
             if value is False
         ]
         item_problems = [
-            f"evidence[{item.evidence_index}] {item.span_id}: {item.problem}"
+            f"evidence[{item.evidence_index}] {item.idx}: {item.problem}"
             for item in evidence_item_checks
             if item.problem
         ]
         item_details = " Details: " + " | ".join(item_problems[:5]) if item_problems else ""
 
         if status == EvidenceStatus.INVALID:
-            if "quotes_found_in_spans" in failed:
+            if "quotes_found_in_idxs" in failed:
                 return (
                     "None of the cited quotes were found in the trace, "
                     "so this LLM finding cannot be used as evidence." + item_details
@@ -260,10 +260,10 @@ class EvidenceVerifier:
                 + item_details
             )
 
-        if "all_span_ids_exist" in failed and "quotes_found_in_spans" not in failed:
+        if "all_idxs_exist" in failed and "quotes_found_in_idxs" not in failed:
             return (
-                "The quoted evidence was found in the raw trace, but at least one cited span_id "
-                "is not resolvable in the normalized span index. Treat this finding as weak: "
+                "The quoted evidence was found in the raw trace, but at least one cited idx "
+                "is not resolvable in the normalized idx index. Treat this finding as weak: "
                 "the text is grounded, but the step id needs normalization or prompt correction."
                 + item_details
             )
@@ -277,26 +277,26 @@ class EvidenceVerifier:
     def _resolve_evidence_items(
         self,
         finding: Finding,
-        span_index: Mapping[str, _SpanRecord],
+        idx_index: Mapping[str, _IdxRecord],
         raw_trace_text: str | None,
     ) -> list[_ResolvedEvidenceItem]:
         """Resolve and verify each evidence item.
 
-        Numeric ``span_id`` values are treated as message indices. The verifier
+        Numeric ``idx`` values are treated as message indices. The verifier
         first tries the exact index, then ``index - 1`` and ``index + 1``. This
         handles the common mismatch between zero-based and one-based numbering
         in LLM outputs while still recording the resolved id explicitly.
         """
         resolved_items: list[_ResolvedEvidenceItem] = []
         for evidence_index, evidence in enumerate(finding.evidence):
-            span_id = str(evidence.span_id).strip()
+            idx_val = str(evidence.idx).strip()
             role_plausible = (evidence.role or "").strip().lower() in self.allowed_roles
             quote = evidence.quote or ""
 
-            record, resolved_span_id, resolution_strategy = self._resolve_span_record(
-                span_id=span_id,
+            record, resolved_idx, resolution_strategy = self._resolve_idx_record(
+                idx_val=idx_val,
                 quote=quote,
-                span_index=span_index,
+                idx_index=idx_index,
                 raw_trace_text=raw_trace_text,
             )
 
@@ -309,54 +309,54 @@ class EvidenceVerifier:
                 # Soft mode: the exact/neighbor step id may be wrong, but the quoted
                 # evidence is present in the trace. Resolve the item to a raw-text
                 # window around the quote, infer the nearby agent if possible, and
-                # treat the span as softly resolved instead of failing the finding.
+                # treat the idx as softly resolved instead of failing the finding.
                 quote_found = True
                 used_raw_trace_fallback = True
                 raw_record = self._record_from_raw_quote(
-                    span_id=span_id,
+                    idx_val=idx_val,
                     quote=quote,
                     raw_trace_text=raw_trace_text,
                 )
                 if raw_record is not None:
                     record = raw_record
-                    resolution_strategy = "raw_quote_numeric_soft" if self._is_int_like(span_id) else "raw_quote_soft"
+                    resolution_strategy = "raw_quote_numeric_soft" if self._is_int_like(idx_val) else "raw_quote_soft"
 
             # In soft mode, a record obtained from raw-quote fallback is still a
-            # resolved evidence location. We reserve span_exists=false for cases
+            # resolved evidence location. We reserve idx_exists=false for cases
             # where neither an indexed block nor a raw quote window could be found.
-            span_exists = record is not None
+            idx_exists = record is not None
 
             problems: list[str] = []
-            if not span_exists:
+            if not idx_exists:
                 problems.append(
-                    "span_id could not be resolved and the quote was not found in the trace; "
+                    "idx could not be resolved and the quote was not found in the trace; "
                     "this is a gross grounding error"
                 )
             elif used_raw_trace_fallback:
                 problems.append(
-                    "span_id was resolved softly by locating the quote in raw trace text; "
+                    "idx was resolved softly by locating the quote in raw trace text; "
                     "exact message index may be off, but the evidence text is grounded"
                 )
             if not quote_found:
                 if not quote.strip():
                     problems.append("quote is empty")
                 else:
-                    problems.append("quote was not found in the cited span, neighboring index, or raw trace")
+                    problems.append("quote was not found in the cited idx, neighboring index, or raw trace")
             if not role_plausible:
                 problems.append(f"unsupported evidence role: {evidence.role!r}")
-            if span_exists and resolved_span_id != span_id:
+            if idx_exists and resolved_idx != idx_val:
                 problems.append(
-                    f"span_id {span_id!r} was resolved as {resolved_span_id!r} using {resolution_strategy}"
+                    f"idx {idx_val!r} was resolved as {resolved_idx!r} using {resolution_strategy}"
                 )
 
             check = EvidenceItemCheck(
                 evidence_index=evidence_index,
-                span_id=span_id,
-                span_exists=span_exists,
+                idx=idx_val,
+                idx_exists=idx_exists,
                 quote_found=quote_found,
                 role_plausible=role_plausible,
                 used_raw_trace_fallback=used_raw_trace_fallback,
-                resolved_span_id=resolved_span_id if resolved_span_id != span_id else None,
+                resolved_idx=resolved_idx if resolved_idx != idx_val else None,
                 resolved_agent=record.agent if record is not None else None,
                 resolution_strategy=resolution_strategy,
                 problem="; ".join(problems) if problems else None,
@@ -364,28 +364,28 @@ class EvidenceVerifier:
             resolved_items.append(_ResolvedEvidenceItem(check=check, record=record))
         return resolved_items
 
-    def _resolve_span_record(
+    def _resolve_idx_record(
         self,
-        span_id: str,
+        idx_val: str,
         quote: str,
-        span_index: Mapping[str, _SpanRecord],
+        idx_index: Mapping[str, _IdxRecord],
         raw_trace_text: str | None,
-    ) -> tuple[_SpanRecord | None, str, str]:
-        """Resolve a cited span id to a record.
+    ) -> tuple[_IdxRecord | None, str, str]:
+        """Resolve a cited idx to a record.
 
         For numeric ids, try exact index and then +/-1. Prefer the candidate
         whose content contains the quote; otherwise fall back to exact index if
         it exists.
         """
-        if self._is_int_like(span_id):
-            idx = int(span_id)
+        if self._is_int_like(idx_val):
+            idx = int(idx_val)
             candidates = [idx, idx - 1, idx + 1]
-            existing: list[tuple[str, _SpanRecord, str]] = []
+            existing: list[tuple[str, _IdxRecord, str]] = []
             for candidate in candidates:
                 if candidate < 0:
                     continue
                 candidate_id = str(candidate)
-                record = span_index.get(candidate_id)
+                record = idx_index.get(candidate_id)
                 if record is None:
                     continue
                 strategy = "numeric_exact" if candidate == idx else "numeric_pm1_fuzzy"
@@ -400,15 +400,15 @@ class EvidenceVerifier:
                 # otherwise use the first available neighbor. Quote verification will
                 # decide whether the finding becomes weak/invalid.
                 for candidate_id, record, strategy in existing:
-                    if candidate_id == span_id:
+                    if candidate_id == idx_val:
                         return record, candidate_id, strategy
                 candidate_id, record, strategy = existing[0]
                 return record, candidate_id, strategy
 
-        if span_id in span_index:
-            return span_index[span_id], span_id, "exact"
+        if idx_val in idx_index:
+            return idx_index[idx_val], idx_val, "exact"
 
-        return None, span_id, "unresolved"
+        return None, idx_val, "unresolved"
 
     @staticmethod
     def _is_int_like(value: str) -> bool:
@@ -420,20 +420,20 @@ class EvidenceVerifier:
 
     def _record_from_raw_quote(
         self,
-        span_id: str,
+        idx_val: str,
         quote: str,
         raw_trace_text: str | None,
-    ) -> _SpanRecord | None:
+    ) -> _IdxRecord | None:
         if not raw_trace_text or not quote.strip() or not self._contains_quote(raw_trace_text, quote):
             return None
         content = self._raw_indexed_block_containing_quote(raw_trace_text, quote)
         if content is None:
             content = self._raw_window_around_quote(raw_trace_text, quote)
-        return _SpanRecord(
-            span_id=span_id,
+        return _IdxRecord(
+            idx=idx_val,
             content=content,
             agent=self._infer_agent_from_raw_step(content),
-            span_type="raw_quote_soft_fallback",
+            idx_type="raw_quote_soft_fallback",
         )
 
     @classmethod
@@ -471,7 +471,7 @@ class EvidenceVerifier:
     def _check_culprit_agent_matches(
         self,
         finding: Finding,
-        resolved_records: list[_SpanRecord],
+        resolved_records: list[_IdxRecord],
     ) -> bool:
         """Check whether cited evidence is compatible with culprit candidates.
 
@@ -497,7 +497,7 @@ class EvidenceVerifier:
         saw_known_agent = False
         for record in resolved_records:
             content_l = record.content.lower()
-            span_id_l = record.span_id.lower()
+            idx_l = record.idx.lower()
             record_agent = (record.agent or "").strip()
             record_agent_l = record_agent.lower()
 
@@ -509,7 +509,7 @@ class EvidenceVerifier:
 
             # Fallbacks for raw traces that include agent labels in the text window.
             for agent_l in candidate_agents:
-                if agent_l in span_id_l:
+                if agent_l in idx_l:
                     return True
                 if re.search(rf"(?im)^\s*(?:agent|agent_name|name|sender|role)\s*:\s*{re.escape(agent_l)}\b", content_l):
                     return True
@@ -539,43 +539,43 @@ class EvidenceVerifier:
         value = value.replace('\\"', '"')
         return re.sub(r"\s+", " ", value).strip()
 
-    def _build_span_index(self, eval_input: EvaluationInput | RawTraceInput) -> dict[str, _SpanRecord]:
-        span_index: dict[str, _SpanRecord] = {}
+    def _build_idx_index(self, eval_input: EvaluationInput | RawTraceInput) -> dict[str, _IdxRecord]:
+        idx_index: dict[str, _IdxRecord] = {}
 
         if getattr(eval_input, "dialogue_history", None):
             for i, msg in enumerate(eval_input.dialogue_history or []):
                 content = self._to_text(msg.content)
                 agent = msg.role.value if isinstance(msg, DialogueMessage) else None
-                span_id = f"message_{i}"
-                span_index[span_id] = _SpanRecord(
-                    span_id=span_id,
+                idx_val = f"message_{i}"
+                idx_index[idx_val] = _IdxRecord(
+                    idx=idx_val,
                     content=content,
                     agent=agent,
-                    span_type="dialogue_message",
+                    idx_type="dialogue_message",
                 )
                 # Lightweight fallback: allow the LLM to cite message index 0, 1, ...
-                span_index.setdefault(str(i), _SpanRecord(
-                    span_id=str(i),
+                idx_index.setdefault(str(i), _IdxRecord(
+                    idx=str(i),
                     content=content,
                     agent=agent,
-                    span_type="dialogue_message_index",
+                    idx_type="dialogue_message_index",
                 ))
 
         if getattr(eval_input, "agent_responses", None):
             for i, response in enumerate(eval_input.agent_responses or []):
                 content = self._to_text(response.content)
                 agent = self._agent_from_metadata_or_id(response.metadata, response.response_id)
-                span_index[response.response_id] = _SpanRecord(
-                    span_id=response.response_id,
+                idx_index[response.response_id] = _IdxRecord(
+                    idx=response.response_id,
                     content=content,
                     agent=agent,
-                    span_type="agent_response",
+                    idx_type="agent_response",
                 )
-                span_index.setdefault(str(i), _SpanRecord(
-                    span_id=str(i),
+                idx_index.setdefault(str(i), _IdxRecord(
+                    idx=str(i),
                     content=content,
                     agent=agent,
-                    span_type="agent_response_index",
+                    idx_type="agent_response_index",
                 ))
 
         if getattr(eval_input, "agent_states", None):
@@ -585,84 +585,84 @@ class EvidenceVerifier:
                 if state.tool_call is not None:
                     content_parts.append(self._to_text(state.tool_call.model_dump(mode="json")))
                     if state.tool_call.id:
-                        span_index[state.tool_call.id] = _SpanRecord(
-                            span_id=state.tool_call.id,
+                        idx_index[state.tool_call.id] = _IdxRecord(
+                            idx=state.tool_call.id,
                             content=self._to_text(state.tool_call.model_dump(mode="json")),
                             agent=agent,
-                            span_type="tool_call",
+                            idx_type="tool_call",
                         )
                 content = "\n".join(p for p in content_parts if p)
-                span_index[state.state_id] = _SpanRecord(
-                    span_id=state.state_id,
+                idx_index[state.state_id] = _IdxRecord(
+                    idx=state.state_id,
                     content=content,
                     agent=agent,
-                    span_type=state.type.value,
+                    idx_type=state.type.value,
                 )
-                span_index.setdefault(str(i), _SpanRecord(
-                    span_id=str(i),
+                idx_index.setdefault(str(i), _IdxRecord(
+                    idx=str(i),
                     content=content,
                     agent=agent,
-                    span_type="agent_state_index",
+                    idx_type="agent_state_index",
                 ))
 
         if getattr(eval_input, "policies", None):
             for policy in eval_input.policies or []:
-                span_index[policy.policy_id] = _SpanRecord(
-                    span_id=policy.policy_id,
+                idx_index[policy.policy_id] = _IdxRecord(
+                    idx=policy.policy_id,
                     content=self._to_text(policy.model_dump(mode="json")),
-                    span_type="policy",
+                    idx_type="policy",
                 )
 
         if getattr(eval_input, "agents_tools_info", None):
             for tools_info in eval_input.agents_tools_info or []:
-                if self.allow_agent_name_as_span_id:
-                    span_index[tools_info.agent_name] = _SpanRecord(
-                        span_id=tools_info.agent_name,
+                if self.allow_agent_name_as_idx:
+                    idx_index[tools_info.agent_name] = _IdxRecord(
+                        idx=tools_info.agent_name,
                         content=self._to_text(tools_info.model_dump(mode="json")),
                         agent=tools_info.agent_name,
-                        span_type="agent_tools_info",
+                        idx_type="agent_tools_info",
                     )
                 for tool_call in tools_info.tools_called:
                     if tool_call.id:
-                        span_index[tool_call.id] = _SpanRecord(
-                            span_id=tool_call.id,
+                        idx_index[tool_call.id] = _IdxRecord(
+                            idx=tool_call.id,
                             content=self._to_text(tool_call.model_dump(mode="json")),
                             agent=tools_info.agent_name,
-                            span_type="tool_call",
+                            idx_type="tool_call",
                         )
 
         if getattr(eval_input, "agents_errors", None):
             for i, error in enumerate(eval_input.agents_errors or []):
-                span_id = f"agent_error_{i}"
-                span_index[span_id] = _SpanRecord(
-                    span_id=span_id,
+                idx_val = f"agent_error_{i}"
+                idx_index[idx_val] = _IdxRecord(
+                    idx=idx_val,
                     content=error.error_message or "",
                     agent=error.agent_name,
-                    span_type="agent_error",
+                    idx_type="agent_error",
                 )
 
-        if self.allow_agent_name_as_span_id and getattr(eval_input, "agents_pool", None):
+        if self.allow_agent_name_as_idx and getattr(eval_input, "agents_pool", None):
             for agent in eval_input.agents_pool.agents:
-                span_index[agent.agent_name] = _SpanRecord(
-                    span_id=agent.agent_name,
+                idx_index[agent.agent_name] = _IdxRecord(
+                    idx=agent.agent_name,
                     content=agent.instructions,
                     agent=agent.agent_name,
-                    span_type="agent_description",
+                    idx_type="agent_description",
                 )
 
         raw_trace = getattr(eval_input, "trace", None)
         if raw_trace:
-            self._add_indexed_raw_trace_steps(span_index, raw_trace)
-            self._add_raw_trace_ids(span_index, raw_trace)
+            self._add_indexed_raw_trace_steps(idx_index, raw_trace)
+            self._add_raw_trace_ids(idx_index, raw_trace)
 
-        return span_index
+        return idx_index
 
-    def _add_indexed_raw_trace_steps(self, span_index: dict[str, _SpanRecord], raw_trace: str) -> None:
+    def _add_indexed_raw_trace_steps(self, idx_index: dict[str, _IdxRecord], raw_trace: str) -> None:
         """Index raw trace blocks by numeric message id.
 
         Supports the preferred format produced by the launcher (`[0] ...`) and
         looser forms such as `Message 0: ...` or `Step 1 - ...`. Numeric ids are
-        intended to be cited by LLM evaluators as `evidence[i].span_id`.
+        intended to be cited by LLM evaluators as `evidence[i].idx`.
         """
         for pattern in (self._INDEXED_TRACE_BLOCK_PATTERN, self._LOOSE_INDEXED_TRACE_BLOCK_PATTERN):
             for match in pattern.finditer(raw_trace):
@@ -671,24 +671,24 @@ class EvidenceVerifier:
                 if step_id and content:
                     # Raw formatted trace indices are the ids shown to the LLM,
                     # so they take precedence over unrelated internal list indices.
-                    span_index[step_id] = _SpanRecord(
-                        span_id=step_id,
+                    idx_index[step_id] = _IdxRecord(
+                        idx=step_id,
                         content=content,
                         agent=self._infer_agent_from_raw_step(content),
-                        span_type="raw_trace_step_index",
+                        idx_type="raw_trace_step_index",
                     )
 
-    def _add_raw_trace_ids(self, span_index: dict[str, _SpanRecord], raw_trace: str) -> None:
+    def _add_raw_trace_ids(self, idx_index: dict[str, _IdxRecord], raw_trace: str) -> None:
         for pattern in self._RAW_ID_PATTERNS:
             for match in pattern.finditer(raw_trace):
-                span_id = match.group(1) if match.groups() else match.group(0)
-                span_id = self._safe_unescape(span_id)
-                if span_id and span_id not in span_index:
-                    span_index[span_id] = _SpanRecord(
-                        span_id=span_id,
+                idx_val = match.group(1) if match.groups() else match.group(0)
+                idx_val = self._safe_unescape(idx_val)
+                if idx_val and idx_val not in idx_index:
+                    idx_index[idx_val] = _IdxRecord(
+                        idx=idx_val,
                         content=raw_trace,
-                        agent=self._infer_agent_from_id(span_id),
-                        span_type="raw_trace_reference",
+                        agent=self._infer_agent_from_id(idx_val),
+                        idx_type="raw_trace_reference",
                     )
 
     @staticmethod
@@ -746,20 +746,20 @@ class EvidenceVerifier:
         return candidate
 
     @staticmethod
-    def _agent_from_metadata_or_id(metadata: dict[str, Any] | None, span_id: str) -> str | None:
+    def _agent_from_metadata_or_id(metadata: dict[str, Any] | None, idx_val: str) -> str | None:
         if metadata:
             for key in ("agent", "agent_name", "name"):
                 value = metadata.get(key)
                 if isinstance(value, str) and value.strip():
                     return value.strip()
-        return EvidenceVerifier._infer_agent_from_id(span_id)
+        return EvidenceVerifier._infer_agent_from_id(idx_val)
 
     @staticmethod
-    def _infer_agent_from_id(span_id: str) -> str | None:
-        if "_" not in span_id:
+    def _infer_agent_from_id(idx_val: str) -> str | None:
+        if "_" not in idx_val:
             return None
-        prefix = span_id.rsplit("_", 1)[0]
-        if prefix in {"span", "state", "response", "message", "agent_error"}:
+        prefix = idx_val.rsplit("_", 1)[0]
+        if prefix in {"idx", "span", "state", "response", "message", "agent_error"}:
             return None
         return prefix or None
 

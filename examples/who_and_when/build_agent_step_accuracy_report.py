@@ -206,9 +206,9 @@ def build_markdown_report(result: dict[str, Any], args: dict[str, Any]) -> str:
         ("Agent", "Top-1 Acc", summary.get("agent_top1_acc"), summary.get("agent_examples"), "Primary culprit agent matches the annotation."),
         ("Agent", "Hit Acc", summary.get("agent_hit_acc"), summary.get("agent_examples"), "At least one predicted culprit agent matches the annotation."),
         ("Agent", "Exact Set Acc", summary.get("agent_exact_set_acc"), summary.get("agent_examples"), "Predicted agent set exactly equals the gold agent set."),
-        ("Step", "Top-1 Acc", summary.get("step_top1_acc"), summary.get("step_examples"), "First predicted problematic span equals the gold span."),
-        ("Step", "Hit Acc", summary.get("step_hit_acc"), summary.get("step_examples"), "At least one predicted span exactly matches a gold span."),
-        ("Step", "Hit Acc ±1", summary.get("step_hit_pm1_acc"), summary.get("step_examples"), "At least one predicted numeric span is within ±1 of a gold span."),
+        ("Step", "Top-1 Acc", summary.get("step_top1_acc"), summary.get("step_examples"), "First predicted problematic idx equals the gold idx."),
+        ("Step", "Hit Acc", summary.get("step_hit_acc"), summary.get("step_examples"), "At least one predicted idx exactly matches a gold idx."),
+        ("Step", "Hit Acc ±1", summary.get("step_hit_pm1_acc"), summary.get("step_examples"), "At least one predicted numeric idx is within ±1 of a gold idx."),
     ]
     for group, metric, value, count, meaning in metric_rows:
         lines.append(f"| {group} | {metric} | {_pct(value)} | {_md(count)} | {meaning} |")
@@ -232,7 +232,7 @@ def build_markdown_report(result: dict[str, Any], args: dict[str, Any]) -> str:
     lines.append(f"## Example mismatches / review targets (top {len(error_rows)})")
     lines.append("")
     if error_rows:
-        lines.append("| # | File | Gold agents | Predicted agents | Agent hit | Gold spans | Predicted spans | Step hit ±1 | Invalid findings |")
+        lines.append("| # | File | Gold agents | Predicted agents | Agent hit | Gold idxs | Predicted idxs | Step hit ±1 | Invalid findings |")
         lines.append("|---:|---|---|---|---:|---|---|---:|---:|")
         for i, row in enumerate(error_rows, start=1):
             lines.append(
@@ -244,8 +244,8 @@ def build_markdown_report(result: dict[str, Any], args: dict[str, Any]) -> str:
                         _md(_fmt_list(row.get("gold_agents"))),
                         _md(_fmt_list(row.get("predicted_agents"))),
                         _check(row.get("agent_hit_correct")),
-                        _md(_fmt_list(row.get("gold_spans"))),
-                        _md(_fmt_list(row.get("predicted_spans"))),
+                        _md(_fmt_list(row.get("gold_idxs"))),
+                        _md(_fmt_list(row.get("predicted_idxs"))),
                         _check(row.get("step_hit_pm1_correct")),
                         _md(row.get("invalid_findings_count")),
                     ]
@@ -288,8 +288,8 @@ def _build_interpretation(summary: dict[str, Any]) -> list[str]:
         )
     if isinstance(step_top1, float) and isinstance(step_hit, float):
         rows.append(
-            f"- First-span ranking: Step Top-1 Acc is {_pct(step_top1)}. If this is much lower than Step Hit Acc, "
-            "use the full problematic_spans list rather than only first_problem_span."
+            f"- First-idx ranking: Step Top-1 Acc is {_pct(step_top1)}. If this is much lower than Step Hit Acc, "
+            "use the full problematic_idxs list rather than only first_problem_idx."
         )
     if not rows:
         rows.append("- Not enough comparable examples to generate an automatic interpretation.")

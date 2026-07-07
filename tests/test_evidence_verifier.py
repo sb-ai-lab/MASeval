@@ -31,7 +31,7 @@ def test_evidence_verifier_marks_verified_finding():
                 culprit_agent_candidates=[
                     CulpritAgentCandidate(
                         agent="WebSurfer",
-                        reason="The cited span belongs to WebSurfer.",
+                        reason="The cited idx belongs to WebSurfer.",
                     )
                 ],
                 evidence=[
@@ -52,11 +52,11 @@ def test_evidence_verifier_marks_verified_finding():
     assert verified.verifications[0].evidence_status == "verified"
     assert verified.verifications[0].usable_for_diagnosis is True
     assert verified.verifications[0].evidence_checks.all_idxs_exist is True
-    assert verified.verifications[0].evidence_item_checks[0].span_exists is True
+    assert verified.verifications[0].evidence_item_checks[0].idx_exists is True
     assert verified.verifications[0].evidence_item_checks[0].quote_found is True
 
 
-def test_evidence_verifier_marks_invalid_missing_span():
+def test_evidence_verifier_marks_invalid_missing_idx():
     eval_input = EvaluationInput(
         agent_states=[
             AgentState(
@@ -75,7 +75,7 @@ def test_evidence_verifier_marks_invalid_missing_span():
                 culprit_agent_candidates=[],
                 evidence=[
                     Evidence(
-                        idx="missing_span",
+                        idx="missing_idx",
                         role="root_cause",
                         claim="The agent produced the final answer.",
                         quote="FINAL ANSWER: 31",
@@ -91,7 +91,7 @@ def test_evidence_verifier_marks_invalid_missing_span():
     assert verified.verifications[0].evidence_status == "invalid"
     assert verified.verifications[0].usable_for_diagnosis is False
     assert verified.verifications[0].evidence_checks.all_idxs_exist is False
-    assert verified.verifications[0].evidence_item_checks[0].span_exists is False
+    assert verified.verifications[0].evidence_item_checks[0].idx_exists is False
     assert (
         "could not be resolved"
         in verified.verifications[0].evidence_item_checks[0].problem
@@ -141,4 +141,4 @@ def test_evidence_verifier_accepts_culprit_role_and_any_matching_candidate():
     assert (
         verified.verifications[0].evidence_checks.culprit_agent_matches_evidence is True
     )
-    assert verified.verifications[0].evidence_checks.span_roles_are_plausible is True
+    assert verified.verifications[0].evidence_checks.idx_roles_are_plausible is True

@@ -30,9 +30,9 @@ Generated: `2026-06-27 17:46:22`
 | Agent | Top-1 Acc | 53.4% | 58 | Primary culprit agent matches the annotation. |
 | Agent | Hit Acc | 91.4% | 58 | At least one predicted culprit agent matches the annotation. |
 | Agent | Exact Set Acc | 8.6% | 58 | Predicted agent set exactly equals the gold agent set. |
-| Step | Top-1 Acc | 0.0% | 58 | First predicted problematic span equals the gold span. |
-| Step | Hit Acc | 43.1% | 58 | At least one predicted span exactly matches a gold span. |
-| Step | Hit Acc ±1 | 63.8% | 58 | At least one predicted numeric span is within ±1 of a gold span. |
+| Step | Top-1 Acc | 0.0% | 58 | First predicted problematic idx equals the gold idx. |
+| Step | Hit Acc | 43.1% | 58 | At least one predicted idx exactly matches a gold idx. |
+| Step | Hit Acc ±1 | 63.8% | 58 | At least one predicted numeric idx is within ±1 of a gold idx. |
 
 ## Diagnostic quality summary
 
@@ -46,11 +46,11 @@ Generated: `2026-06-27 17:46:22`
 
 - Agent localization: Hit Acc is 91.4%, Top-1 Acc is 53.4% (gap 37.9%). A large gap means the correct agent is often present but not ranked first.
 - Step localization: exact Hit Acc is 43.1%, relaxed Hit Acc ±1 is 63.8% (gap 20.7%). A large gap suggests off-by-one or indexing mismatch.
-- First-span ranking: Step Top-1 Acc is 0.0%. If this is much lower than Step Hit Acc, use the full problematic_spans list rather than only first_problem_span.
+- First-idx ranking: Step Top-1 Acc is 0.0%. If this is much lower than Step Hit Acc, use the full problematic_idxs list rather than only first_problem_idx.
 
 ## Example mismatches / review targets (top 20)
 
-| # | File | Gold agents | Predicted agents | Agent hit | Gold spans | Predicted spans | Step hit ±1 | Invalid findings |
+| # | File | Gold agents | Predicted agents | Agent hit | Gold idxs | Predicted idxs | Step hit ±1 | Invalid findings |
 |---:|---|---|---|---:|---|---|---:|---:|
 | 1 | gemini_findings_25.json | Assistant | Orchestrator, WebSurfer | ❌ | 51 | 0, 7, 13 | ❌ | 2 |
 | 2 | gemini_findings_16.json | Assistant | WebSurfer, Orchestrator, FileSurfer | ❌ | 82 | 52, 50, 48, 54, 40, 41, … (+21) | ❌ | 0 |
