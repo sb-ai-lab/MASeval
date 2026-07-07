@@ -533,7 +533,7 @@ def who_and_when_to_spans(trace: Any) -> list[Span]:
             spans.append({"idx": str(i), "text": _flatten(st), "agent": None})
             continue
         if chat_only:
-            agent = st.get("mistake_agent") or st.get("agent")
+            agent = st.get("name") or st.get("mistake_agent") or st.get("agent")
         else:
             agent = _ww_role_agent(st.get("role")) or st.get("mistake_agent") or st.get("agent")
         if "content" in st:
