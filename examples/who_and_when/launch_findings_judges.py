@@ -429,14 +429,15 @@ if __name__ == "__main__":
     #     from_idx = int(os.environ.get("FROM_IDX", "0"))
     # except ValueError:
     #     from_idx = 0
+    # from_idx = 0
 
     # asyncio.run(
     #     main(
-    #         model_name="z-ai/glm-5.2",
+    #         model_name="google/gemini-2.5-flash",
     #         enable_tracing=True,
     #         df=df_handcrafted,
-    #         result_file_name="glm_findings_",
-    #         folder_name="who&when_hand_glm_findings_v9_report",
+    #         result_file_name="gemini_findings_",
+    #         folder_name="who&when_hand_gemini_idx_msg_v2",
     #         from_idx=from_idx,
     #     )
     # )
@@ -456,7 +457,7 @@ if __name__ == "__main__":
             enable_tracing=True,
             df=df_algo,
             result_file_name="gemini_findings_",
-            folder_name="who&when_algo_gemini_findings_report_v2",
+            folder_name="who&when_algo_gemini_idx_msg_v2",
             from_idx=from_idx,
         )
     )

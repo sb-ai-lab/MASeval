@@ -1,16 +1,17 @@
-"""Diagnostic report aggregation for evidence-grounded LLM evaluator outputs.
+"""Weighted diagnostic report aggregation.
 
-The module consumes the JSON object produced by the findings evaluators plus
-``EvidenceVerifier`` and builds one compact report for downstream review/UI:
+This module is intentionally separate from ``maseval.reporting`` so it can be
+used for ablation experiments without changing the default report builder.
 
-* answer status: whether the final answer matches a reference, when available;
-* diagnostic status: severity counts, primary culprit, primary failure type;
-* diagnostic report: issue list, problematic agents, problematic spans, review targets.
+It supports two sources of diagnostic findings:
 
-The aggregation intentionally uses ``EvidenceVerifier`` as a gate. Findings with
-``usable_for_diagnosis=false`` are not used for the main diagnostic counts, but
-are kept as review targets. ``weak`` findings are treated as usable, because in
-this pipeline they mean "grounded enough, but approximate" rather than "discard".
+1. LLM evaluator findings gated by ``EvidenceVerifier``.
+2. Deterministic / non-LLM validator findings under either
+   ``non_llm_validators`` or ``deterministic_validation``.
+
+The key experiment parameter is ``non_llm_validator_weight``.  It affects ranking
+of culprit agents/spans and primary failure type, but the public JSON does not
+expose internal scores.
 """
 
 from __future__ import annotations
@@ -19,16 +20,12 @@ import re
 from collections import Counter, defaultdict
 from typing import Any, Mapping
 
-SeverityName = str
-MetricName = str
-
-DEPRECATED_METRIC_NAMES = {
-    "mas_task_completion",
-    "MAS_TASK_COMPLETION",
-}
+DEPRECATED_METRIC_NAMES = {"mas_task_completion", "MAS_TASK_COMPLETION"}
 
 NON_FINDING_KEYS = {
     "evidence_verification",
+    "non_llm_validators",
+    "deterministic_validation",
     "report",
     "status",
     "diagnostic_report",
@@ -48,8 +45,16 @@ SEVERITY_WEIGHT: dict[str, float] = {
 
 EVIDENCE_STATUS_WEIGHT: dict[str, float] = {
     "verified": 1.0,
+    "deterministic": 1.0,
     "weak": 0.7,
     "invalid": 0.0,
+    "unverified": 0.0,
+}
+
+CONFIDENCE_WEIGHT: dict[str, float] = {
+    "high": 1.0,
+    "medium": 0.75,
+    "low": 0.5,
 }
 
 METRIC_TO_FAILURE_TYPE: dict[str, str] = {
@@ -67,13 +72,7 @@ METRIC_TO_FAILURE_TYPE: dict[str, str] = {
     "prompt_quality": "prompt_quality_issue",
 }
 
-ANSWER_KEY_CANDIDATES = (
-    "predicted_answer",
-    "model_answer",
-    "final_answer",
-    "answer",
-)
-
+ANSWER_KEY_CANDIDATES = ("predicted_answer", "model_answer", "final_answer", "answer")
 REFERENCE_KEY_CANDIDATES = (
     "reference_answer",
     "ground_truth_answer",
@@ -83,45 +82,40 @@ REFERENCE_KEY_CANDIDATES = (
 )
 
 
-def build_evaluation_report(
+def build_weighted_evaluation_report(
     evaluation: Mapping[str, Any],
     *,
+    non_llm_validator_weight: float = 1.0,
     predicted_answer: Any | None = None,
     reference_answer: Any | None = None,
     verification_mode: str | None = None,
 ) -> dict[str, Any]:
-    """Build a compact final report from metric findings and evidence checks.
+    """Build a report with configurable deterministic-validator weight.
 
     Args:
-        evaluation: A full per-task JSON object. It may contain metric outputs
-            under metric-name keys and an ``evidence_verification`` key produced
-            by :class:`EvidenceVerifier`.
-        predicted_answer: Optional final answer produced by the evaluated agent.
-            If omitted, the aggregator tries to extract ``FINAL ANSWER: ...``
-            from findings, then falls back to top-level answer-like keys.
-        reference_answer: Optional reference / gold answer. If omitted, the
-            aggregator tries common top-level reference keys.
-        verification_mode: Optional explicit mode. If omitted, it is inferred as
-            ``reference_based`` when a reference is available, ``trace_grounded``
-            when only a predicted answer is available, otherwise ``unavailable``.
+        evaluation: Per-task JSON produced by the MASeval findings pipeline.
+        non_llm_validator_weight: Weight for deterministic validators.  Typical
+            ablation values: 0.0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5.
+            ``0.0`` disables deterministic validators completely.
+        predicted_answer: Optional predicted final answer.
+        reference_answer: Optional reference answer.
+        verification_mode: Optional answer-check mode.
 
     Returns:
-        A JSON-serializable dict with ``status`` and ``diagnostic_report``.
+        JSON-serializable report with the same high-level shape as
+        ``maseval.reporting.build_evaluation_report`` plus an ``aggregation``
+        metadata block.
     """
+
+    non_llm_validator_weight = float(non_llm_validator_weight)
 
     predicted_answer = _infer_predicted_answer(evaluation, predicted_answer)
     reference_answer = _infer_reference_answer(evaluation, reference_answer)
-    answer_status = _answer_status_from_final_answer_verification(
+    answer_status = _answer_status_from_existing_report(
         evaluation,
         predicted_answer=predicted_answer,
         reference_answer=reference_answer,
     )
-    if answer_status is None:
-        answer_status = _answer_status_from_existing_report(
-            evaluation,
-            predicted_answer=predicted_answer,
-            reference_answer=reference_answer,
-        )
     if answer_status is None:
         answer_status = _build_answer_status(
             predicted_answer=predicted_answer,
@@ -133,8 +127,7 @@ def build_evaluation_report(
 
     issues: list[dict[str, Any]] = []
     review_targets: list[dict[str, Any]] = []
-    # Ranking weights are used internally only for ordering/primary choice.
-    # They are intentionally not exposed in the public report schema.
+
     agent_scores: dict[str, float] = defaultdict(float)
     agent_counts: dict[str, int] = defaultdict(int)
     span_scores: dict[str, float] = defaultdict(float)
@@ -142,34 +135,59 @@ def build_evaluation_report(
     metric_scores: dict[str, float] = defaultdict(float)
     severity_counts: Counter[str] = Counter()
 
-    for metric_name, metric_result in _iter_metric_results(evaluation):
+    llm_issues_used = 0
+    non_llm_issues_used = 0
+
+    # 1. LLM findings: gated by EvidenceVerifier.
+    for metric_name, metric_result in _iter_llm_metric_results(evaluation):
         verifications = evidence_by_metric.get(metric_name, {})
         findings = metric_result.get("findings") or []
         for finding_index, finding in enumerate(findings):
             verification = verifications.get(finding_index)
-            finding_summary = _summarize_finding(
+            summary = _summarize_llm_finding(
                 metric_name=metric_name,
                 finding_index=finding_index,
                 finding=finding,
                 verification=verification,
             )
-
-            if finding_summary["usable_for_diagnosis"]:
-                issues.append(finding_summary)
-                severity = finding_summary["severity_estimate"]
-                severity_counts[severity] += 1
-                base_score = _issue_score(finding_summary)
-                metric_scores[metric_name] += base_score
-
-                for agent in finding_summary["culprit_agents"]:
-                    agent_scores[agent] += base_score
-                    agent_counts[agent] += 1
-
-                for span_id in finding_summary["problematic_spans"]:
-                    span_scores[span_id] += base_score
-                    span_counts[span_id] += 1
+            if summary["usable_for_diagnosis"]:
+                issues.append(summary)
+                severity_counts[summary["severity_estimate"]] += 1
+                llm_issues_used += 1
+                _accumulate_issue(
+                    summary,
+                    score=_issue_score(summary),
+                    agent_scores=agent_scores,
+                    agent_counts=agent_counts,
+                    span_scores=span_scores,
+                    span_counts=span_counts,
+                    metric_scores=metric_scores,
+                )
             else:
-                review_targets.append(finding_summary)
+                review_targets.append(summary)
+
+    # 2. Deterministic / non-LLM validators: already grounded by regex match.
+    #    They are skipped completely for lambda=0.0.
+    if non_llm_validator_weight > 0:
+        for metric_name, finding_index, finding in _iter_non_llm_validator_findings(evaluation):
+            summary = _summarize_non_llm_finding(
+                metric_name=metric_name,
+                finding_index=finding_index,
+                finding=finding,
+                non_llm_validator_weight=non_llm_validator_weight,
+            )
+            issues.append(summary)
+            severity_counts[summary["severity_estimate"]] += 1
+            non_llm_issues_used += 1
+            _accumulate_issue(
+                summary,
+                score=_issue_score(summary) * non_llm_validator_weight * max(1, int(summary.get("occurrences", 1))),
+                agent_scores=agent_scores,
+                agent_counts=agent_counts,
+                span_scores=span_scores,
+                span_counts=span_counts,
+                metric_scores=metric_scores,
+            )
 
     problematic_agents = _rank_agents(agent_scores, agent_counts)
     problematic_spans = _rank_spans(span_scores, span_counts)
@@ -206,44 +224,67 @@ def build_evaluation_report(
             "issues": issues,
             "review_targets": review_targets,
         },
+        "aggregation": {
+            "llm_finding_weight": 1.0,
+            "non_llm_validator_weight": non_llm_validator_weight,
+            "llm_issues_used": llm_issues_used,
+            "non_llm_issues_used": non_llm_issues_used,
+            "review_targets_count": len(review_targets),
+            "ranking_note": "Internal scores are used only for ordering; public agent/span entries expose counts only.",
+        },
     }
 
 
-def build_report_from_file(
+def build_weighted_report_from_file(
     input_path: str,
     *,
     output_path: str | None = None,
+    non_llm_validator_weight: float = 1.0,
     predicted_answer: Any | None = None,
     reference_answer: Any | None = None,
     verification_mode: str | None = None,
 ) -> dict[str, Any]:
-    """Load a per-task JSON file, build report, and optionally save it.
-
-    This helper is intentionally dependency-free, so it can be used from small
-    scripts without constructing pydantic models.
-    """
-
+    """Load one JSON, rebuild weighted report, optionally save full JSON."""
     import json
     from pathlib import Path
 
     path = Path(input_path)
-    evaluation = json.loads(path.read_text())
-    report = build_evaluation_report(
-        evaluation,
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["report"] = build_weighted_evaluation_report(
+        payload,
+        non_llm_validator_weight=non_llm_validator_weight,
         predicted_answer=predicted_answer,
         reference_answer=reference_answer,
         verification_mode=verification_mode,
     )
-    if output_path:
-        Path(output_path).write_text(json.dumps(report, ensure_ascii=False, indent=2))
-    return report
+    if output_path is not None:
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(output_path).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return payload["report"]
 
 
-def _iter_metric_results(evaluation: Mapping[str, Any]):
+def _accumulate_issue(
+    issue: Mapping[str, Any],
+    *,
+    score: float,
+    agent_scores: dict[str, float],
+    agent_counts: dict[str, int],
+    span_scores: dict[str, float],
+    span_counts: dict[str, int],
+    metric_scores: dict[str, float],
+) -> None:
+    metric_scores[str(issue["metric_name"])] += score
+    for agent in issue.get("culprit_agents") or []:
+        agent_scores[str(agent)] += score
+        agent_counts[str(agent)] += 1
+    for span_id in issue.get("problematic_spans") or []:
+        span_scores[str(span_id)] += score
+        span_counts[str(span_id)] += 1
+
+
+def _iter_llm_metric_results(evaluation: Mapping[str, Any]):
     for metric_name, value in evaluation.items():
-        if metric_name in NON_FINDING_KEYS:
-            continue
-        if metric_name in DEPRECATED_METRIC_NAMES:
+        if metric_name in NON_FINDING_KEYS or metric_name in DEPRECATED_METRIC_NAMES:
             continue
         if not isinstance(value, Mapping):
             continue
@@ -252,14 +293,33 @@ def _iter_metric_results(evaluation: Mapping[str, Any]):
         actual_metric_name = str(value.get("metric_name") or metric_name)
         if actual_metric_name in DEPRECATED_METRIC_NAMES:
             continue
-        yield metric_name, value
+        yield str(metric_name), value
+
+
+def _iter_non_llm_validator_findings(evaluation: Mapping[str, Any]):
+    block = evaluation.get("non_llm_validators")
+    if not isinstance(block, Mapping):
+        block = evaluation.get("deterministic_validation")
+    if not isinstance(block, Mapping):
+        return
+
+    metrics = block.get("metrics") if isinstance(block.get("metrics"), Mapping) else block
+    if not isinstance(metrics, Mapping):
+        return
+
+    for metric_name, metric_result in metrics.items():
+        if not isinstance(metric_result, Mapping):
+            continue
+        findings = metric_result.get("findings") or []
+        for finding_index, finding in enumerate(findings):
+            if isinstance(finding, Mapping):
+                yield str(metric_name), finding_index, finding
 
 
 def _verification_index(evidence_verification: Any) -> dict[str, dict[int, Mapping[str, Any]]]:
     index: dict[str, dict[int, Mapping[str, Any]]] = {}
     if not isinstance(evidence_verification, Mapping):
         return index
-
     for metric_name, metric_verification in evidence_verification.items():
         if metric_name in DEPRECATED_METRIC_NAMES:
             continue
@@ -275,11 +335,11 @@ def _verification_index(evidence_verification: Any) -> dict[str, dict[int, Mappi
             except (TypeError, ValueError):
                 continue
             metric_index[finding_index] = item
-        index[metric_name] = metric_index
+        index[str(metric_name)] = metric_index
     return index
 
 
-def _summarize_finding(
+def _summarize_llm_finding(
     *,
     metric_name: str,
     finding_index: int,
@@ -290,37 +350,72 @@ def _summarize_finding(
     confidence = str(finding.get("confidence_estimate") or "medium").lower()
     evidence_status = str((verification or {}).get("evidence_status") or "unverified").lower()
     usable_for_diagnosis = bool((verification or {}).get("usable_for_diagnosis", False))
-
+    if verification is None:
+        usable_for_diagnosis = False
     evidence_item_checks = list((verification or {}).get("evidence_item_checks") or [])
     grounded_evidence_indices = {
         int(item.get("evidence_index"))
         for item in evidence_item_checks
         if isinstance(item, Mapping) and item.get("quote_found")
     }
-
-    # Without evidence verifier output, be conservative: keep the finding as a
-    # review target instead of using it in the main diagnostic status.
-    if verification is None:
-        usable_for_diagnosis = False
-
-    culprit_agents = _extract_culprit_agents(finding)
-    problematic_spans = _extract_problematic_spans(finding, evidence_item_checks)
-
     return {
+        "source": "llm_judge",
         "metric_name": metric_name,
         "finding_index": finding_index,
         "severity_estimate": severity,
         "confidence_estimate": confidence,
         "evidence_status": evidence_status,
+        "source_weight": 1.0,
         "usable_for_diagnosis": usable_for_diagnosis,
-        "culprit_agents": culprit_agents,
-        "problematic_spans": problematic_spans,
+        "culprit_agents": _extract_culprit_agents(finding),
+        "problematic_spans": _extract_problematic_spans(finding, evidence_item_checks),
         "grounded_evidence_count": len(grounded_evidence_indices),
         "total_evidence_count": len(finding.get("evidence") or []),
         "problem_description": finding.get("problem_description"),
         "suggested_fix": finding.get("suggested_fix"),
         "needs_human_review": bool(finding.get("needs_human_review", False)),
         "verifier_explanation": (verification or {}).get("verifier_explanation"),
+    }
+
+
+def _summarize_non_llm_finding(
+    *,
+    metric_name: str,
+    finding_index: int,
+    finding: Mapping[str, Any],
+    non_llm_validator_weight: float,
+) -> dict[str, Any]:
+    severity = str(finding.get("severity") or finding.get("severity_estimate") or "major").lower()
+    culprit_agent = finding.get("culprit_agent")
+    culprit_agents = [str(culprit_agent)] if culprit_agent else []
+    evidence = finding.get("evidence") or []
+    problematic_spans = []
+    for item in evidence:
+        if isinstance(item, Mapping):
+            span_id = item.get("span_id") or item.get("idx")
+            if span_id is not None:
+                problematic_spans.append(str(span_id))
+    failure_type = str(finding.get("failure_type") or metric_name)
+    explanation = finding.get("explanation") or failure_type
+    return {
+        "source": "non_llm_validator",
+        "metric_name": metric_name,
+        "finding_index": finding_index,
+        "severity_estimate": severity,
+        "confidence_estimate": "high",
+        "evidence_status": "deterministic",
+        "source_weight": float(non_llm_validator_weight),
+        "usable_for_diagnosis": True,
+        "culprit_agents": _unique_preserving_order(culprit_agents),
+        "problematic_spans": _unique_preserving_order(problematic_spans),
+        "grounded_evidence_count": len(problematic_spans),
+        "total_evidence_count": len(evidence),
+        "failure_type": failure_type,
+        "problem_description": explanation,
+        "suggested_fix": None,
+        "needs_human_review": False,
+        "verifier_explanation": "Deterministic validator finding; EvidenceVerifier is not required.",
+        "occurrences": int(finding.get("occurrences") or 1),
     }
 
 
@@ -335,26 +430,19 @@ def _extract_culprit_agents(finding: Mapping[str, Any]) -> list[str]:
     return _unique_preserving_order(agents)
 
 
-def _extract_problematic_spans(
-    finding: Mapping[str, Any],
-    evidence_item_checks: list[Any],
-) -> list[str]:
+def _extract_problematic_spans(finding: Mapping[str, Any], evidence_item_checks: list[Any]) -> list[str]:
     spans: list[str] = []
     evidence = finding.get("evidence") or []
-
     if evidence_item_checks:
         for item in evidence_item_checks:
             if not isinstance(item, Mapping):
                 continue
-            # Use grounded citations for primary span lists. Missing citations are
-            # kept in review_targets through the full issue summary.
             if not (item.get("quote_found") or item.get("span_exists")):
                 continue
             span_id = item.get("resolved_span_id") or item.get("span_id") or item.get("resolved_idx") or item.get("idx")
             if span_id is not None:
                 spans.append(str(span_id))
         return _unique_preserving_order(spans)
-
     for item in evidence:
         if isinstance(item, Mapping):
             span_id = item.get("span_id") or item.get("idx")
@@ -366,8 +454,7 @@ def _extract_problematic_spans(
 def _issue_score(issue: Mapping[str, Any]) -> float:
     severity_weight = SEVERITY_WEIGHT.get(str(issue.get("severity_estimate", "major")).lower(), 2.0)
     evidence_weight = EVIDENCE_STATUS_WEIGHT.get(str(issue.get("evidence_status", "weak")).lower(), 0.7)
-    confidence = str(issue.get("confidence_estimate") or "medium").lower()
-    confidence_weight = {"high": 1.0, "medium": 0.75, "low": 0.5}.get(confidence, 0.75)
+    confidence_weight = CONFIDENCE_WEIGHT.get(str(issue.get("confidence_estimate") or "medium").lower(), 0.75)
     return severity_weight * evidence_weight * confidence_weight
 
 
@@ -421,11 +508,7 @@ def _diagnostic_verdict(issues: list[dict[str, Any]], review_targets: list[dict[
     return "clean"
 
 
-def _review_status(
-    answer_status: Mapping[str, Any],
-    issues: list[dict[str, Any]],
-    review_targets: list[dict[str, Any]],
-) -> tuple[bool, str | None]:
+def _review_status(answer_status: Mapping[str, Any], issues: list[dict[str, Any]], review_targets: list[dict[str, Any]]) -> tuple[bool, str | None]:
     if answer_status.get("verdict") == "needs_review":
         return True, "Answer verification requires manual review."
     if any(issue.get("needs_human_review") for issue in issues):
@@ -435,12 +518,25 @@ def _review_status(
     return False, None
 
 
-def _build_answer_status(
-    *,
-    predicted_answer: Any | None,
-    reference_answer: Any | None,
-    verification_mode: str | None,
-) -> dict[str, Any]:
+def _answer_status_from_existing_report(evaluation: Mapping[str, Any], *, predicted_answer: Any | None, reference_answer: Any | None) -> dict[str, Any] | None:
+    report = evaluation.get("report")
+    if not isinstance(report, Mapping):
+        return None
+    status = report.get("status")
+    if not isinstance(status, Mapping):
+        return None
+    answer_status = status.get("answer_status")
+    if not isinstance(answer_status, Mapping):
+        return None
+    result = dict(answer_status)
+    if predicted_answer is not None:
+        result["predicted_answer"] = str(predicted_answer)
+    if reference_answer is not None:
+        result["reference_answer"] = str(reference_answer)
+    return result
+
+
+def _build_answer_status(*, predicted_answer: Any | None, reference_answer: Any | None, verification_mode: str | None) -> dict[str, Any]:
     if verification_mode is None:
         if reference_answer is not None:
             verification_mode = "reference_based"
@@ -448,7 +544,6 @@ def _build_answer_status(
             verification_mode = "trace_grounded"
         else:
             verification_mode = "unavailable"
-
     if predicted_answer is None and reference_answer is None:
         verdict = "unknown"
         reason = "No predicted answer or reference answer is available."
@@ -464,7 +559,6 @@ def _build_answer_status(
     else:
         verdict = "incorrect"
         reason = "Predicted answer does not match the reference answer."
-
     return {
         "verdict": verdict,
         "verification_mode": verification_mode,
@@ -474,46 +568,6 @@ def _build_answer_status(
     }
 
 
-def _answer_status_from_final_answer_verification(
-    evaluation: Mapping[str, Any],
-    *,
-    predicted_answer: Any | None,
-    reference_answer: Any | None,
-) -> dict[str, Any] | None:
-    final_answer_verification = evaluation.get("final_answer_verification")
-    if not isinstance(final_answer_verification, Mapping):
-        return None
-    answer_status = dict(final_answer_verification)
-    answer_status["predicted_answer"] = (
-        None if predicted_answer is None else str(predicted_answer)
-    )
-    answer_status["reference_answer"] = (
-        None if reference_answer is None else str(reference_answer)
-    )
-    return answer_status
-
-
-def _answer_status_from_existing_report(
-    evaluation: Mapping[str, Any],
-    *,
-    predicted_answer: Any | None,
-    reference_answer: Any | None,
-) -> dict[str, Any] | None:
-    report = evaluation.get("report")
-    if not isinstance(report, Mapping):
-        return None
-    status = report.get("status")
-    if not isinstance(status, Mapping):
-        return None
-    answer_status = status.get("answer_status")
-    if not isinstance(answer_status, Mapping):
-        return None
-    result = dict(answer_status)
-    result["predicted_answer"] = None if predicted_answer is None else str(predicted_answer)
-    result["reference_answer"] = None if reference_answer is None else str(reference_answer)
-    return result
-
-
 def _infer_predicted_answer(evaluation: Mapping[str, Any], explicit: Any | None) -> Any | None:
     if explicit is not None:
         return explicit
@@ -521,12 +575,13 @@ def _infer_predicted_answer(evaluation: Mapping[str, Any], explicit: Any | None)
         value = evaluation.get(key)
         if value is not None:
             return value
+    existing = (((evaluation.get("report") or {}).get("status") or {}).get("answer_status") or {})
+    if isinstance(existing, Mapping) and existing.get("predicted_answer") is not None:
+        return existing.get("predicted_answer")
     extracted = _extract_final_answer_from_findings(evaluation)
     if extracted is not None:
         return extracted
-    # `label_answer` appears in old experiment outputs. It is a last-resort
-    # fallback because some datasets use it for references rather than predictions.
-    return evaluation.get("label_answer")
+    return None
 
 
 def _infer_reference_answer(evaluation: Mapping[str, Any], explicit: Any | None) -> Any | None:
@@ -536,7 +591,9 @@ def _infer_reference_answer(evaluation: Mapping[str, Any], explicit: Any | None)
         value = evaluation.get(key)
         if value is not None:
             return value
-    # In old who_and_when outputs `label_answer` is often the reference answer.
+    existing = (((evaluation.get("report") or {}).get("status") or {}).get("answer_status") or {})
+    if isinstance(existing, Mapping) and existing.get("reference_answer") is not None:
+        return existing.get("reference_answer")
     return evaluation.get("label_answer")
 
 
@@ -545,7 +602,7 @@ def _extract_final_answer_from_findings(evaluation: Mapping[str, Any]) -> str | 
         re.compile(r"FINAL\s+ANSWER\s*:\s*([^\n\r]+)", re.IGNORECASE),
         re.compile(r"final_answer\s*[:=]\s*['\"]?([^'\"\n\r]+)", re.IGNORECASE),
     ]
-    for _, metric_result in _iter_metric_results(evaluation):
+    for _, metric_result in _iter_llm_metric_results(evaluation):
         for finding in metric_result.get("findings") or []:
             if not isinstance(finding, Mapping):
                 continue

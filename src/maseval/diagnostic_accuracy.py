@@ -285,10 +285,12 @@ def read_prediction_file(
         agents.insert(0, primary_agent)
 
     problematic_spans = diagnostic_report.get("problematic_spans") or []
+    problematic_spans = list(problematic_spans) + list(diagnostic_report.get("problematic_idxs") or [])
     spans = _unique_preserve_order(
         _extract_named_values(problematic_spans, key="span_id")
+        + _extract_named_values(problematic_spans, key="idx")
     )
-    first_span = _clean_scalar(diagnostic_status.get("first_problem_span"))
+    first_span = _clean_scalar(diagnostic_status.get("first_problem_span") or diagnostic_status.get("first_problem_idx"))
     if first_span and first_span not in spans:
         spans.insert(0, first_span)
 
@@ -306,7 +308,7 @@ def read_prediction_file(
         spans = _unique_preserve_order(
             value
             for issue in issues
-            for value in _as_list(issue.get("problematic_spans"))
+            for value in (_as_list(issue.get("problematic_spans")) + _as_list(issue.get("problematic_idxs")))
         )
 
     if primary_agent is None and agents:
