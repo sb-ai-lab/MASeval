@@ -65,6 +65,7 @@ def main(
     gold_scope: str = "all",
     step_tolerance: int = 1,
     verifier_mode: str | None = None,
+    first_idx_mode: str = "top_ranked",
     output_path: str | Path | None = None,
     print_summary: bool = True,
 ) -> dict:
@@ -88,6 +89,7 @@ def main(
             step_columns=step_columns,
             step_tolerance=step_tolerance,
             verifier_mode=verifier_mode,
+            first_idx_mode=first_idx_mode,
         )
 
     result["run_config"] = {
@@ -99,6 +101,7 @@ def main(
         "step_columns": step_columns,
         "step_tolerance": step_tolerance,
         "verifier_mode": verifier_mode,
+        "first_idx_mode": first_idx_mode,
     }
     result["annotation_source"] = {
         "type": "agentrx",
@@ -128,6 +131,12 @@ if __name__ == "__main__":
     parser.add_argument("--gold-scope", choices=list(GOLD_COLUMNS), default="all")
     parser.add_argument("--step-tolerance", type=int, default=1)
     parser.add_argument("--verifier-mode", choices=("none", "strict", "soft"), default=None)
+    parser.add_argument(
+        "--first-idx-mode",
+        choices=("top_ranked", "min_index"),
+        default="top_ranked",
+        help="How the top-1 predicted span is chosen (default top_ranked).",
+    )
     parser.add_argument("--output-json", default=None)
     args = parser.parse_args()
     main(
@@ -136,5 +145,6 @@ if __name__ == "__main__":
         gold_scope=args.gold_scope,
         step_tolerance=args.step_tolerance,
         verifier_mode=args.verifier_mode,
+        first_idx_mode=args.first_idx_mode,
         output_path=args.output_json,
     )

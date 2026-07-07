@@ -68,9 +68,22 @@ Run scripts with the project venv (`maseval` installed, plus `pandas`,
 EvidenceVerifier gating (same semantics as the Who&When ablation): `none` = all
 findings count, `strict` = only `verified`, `soft` = `verified`+`weak` (default).
 
-## Note on Step Top-1
+## Step Top-1 (`--first-idx-mode`)
 
-`first_problem_span` is the *lowest-indexed* flagged span (usually the
-system/human step), so **Step Top-1 is ~0 by construction** — read **Step Hit** /
-**Step Hit ±1** for step localization. This matches the Who&When behavior and is
-not a bug in this pipeline.
+`first_problem_idx` (the single top-1 predicted span) is chosen by
+`--first-idx-mode`:
+
+- `top_ranked` (**default here**): the model's #1-ranked span
+  (`problematic_idxs[0]`, ranked by findings count then score). This is the
+  meaningful "Step Top-1" and is comparable to the paper's single-root-cause
+  Step Acc (Table 6).
+- `min_index`: the *lowest-indexed* flagged span (usually the system/human
+  step), which is ~0 by construction. This is the legacy Who&When default and is
+  kept only so Who&When numbers stay stable; the AgentRx scorer does **not** use
+  it by default.
+
+The report JSON also emits `step_top1_pm{1,3,5}_acc` — top-1 at ±1/±3/±5
+tolerance — and the Markdown appends a **Table 6 comparison** section lining
+these up against the paper's `Acc@±k`. The paper's AGENTRX is a trained method;
+ours is an untrained LLM judge, so read the comparison as orientation, not
+parity.

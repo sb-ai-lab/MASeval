@@ -23,6 +23,8 @@ import glob
 import importlib.util
 import json
 import math
+import os
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -156,15 +158,73 @@ calculate_agent_step_accuracy = main
 
 
 def _load_hf_annotations(hf_annotations: str) -> pd.DataFrame:
-    """Load annotation table directly from HuggingFace parquet."""
+    """Load annotation table from HuggingFace or a local cache copy."""
 
-    df = pd.read_parquet(hf_annotations)
+    resolved_annotations = _resolve_hf_annotations_path(hf_annotations)
+    df = pd.read_parquet(resolved_annotations)
 
     # Keep row order stable and expose row index for matching gemini_findings_0.json -> row 0.
     df = df.reset_index(drop=True)
     df["row_index"] = df.index.astype(str)
 
     return df
+
+
+def _resolve_hf_annotations_path(hf_annotations: str) -> str:
+    """Resolve a Hugging Face parquet URL to a local cached file when possible."""
+
+    path = Path(hf_annotations)
+    if path.exists():
+        return str(path)
+
+    if not hf_annotations.startswith("hf://datasets/"):
+        return hf_annotations
+
+    match = re.match(r"^hf://datasets/(?P<repo>[^/]+/[^/]+)/(?P<file>[^/?#]+)$", hf_annotations)
+    if match is None:
+        return hf_annotations
+
+    repo_id = match.group("repo")
+    filename = match.group("file")
+    repo_cache = _huggingface_dataset_cache_dir(repo_id)
+    if repo_cache is None:
+        return hf_annotations
+
+    snapshots_dir = repo_cache / "snapshots"
+    if not snapshots_dir.exists():
+        return hf_annotations
+
+    matches = sorted(snapshots_dir.glob(f"*/{filename}"))
+    if matches:
+        return str(matches[0])
+
+    return hf_annotations
+
+
+def _huggingface_dataset_cache_dir(repo_id: str) -> Path | None:
+    """Return the local cache directory for a Hugging Face dataset repo."""
+
+    cache_roots: list[Path] = []
+
+    for env_var in ("HUGGINGFACE_HUB_CACHE", "HF_HOME"):
+        value = os.environ.get(env_var)
+        if value:
+            root = Path(value)
+            cache_roots.append(root if root.name == "hub" else root / "hub")
+
+    xdg_cache_home = os.environ.get("XDG_CACHE_HOME")
+    if xdg_cache_home:
+        cache_roots.append(Path(xdg_cache_home) / "huggingface" / "hub")
+
+    cache_roots.append(Path.home() / ".cache" / "huggingface" / "hub")
+
+    cache_dir_name = f"datasets--{repo_id.replace('/', '--')}"
+    for root in cache_roots:
+        candidate = root / cache_dir_name
+        if candidate.exists():
+            return candidate
+
+    return None
 
 
 def _write_annotations_jsonl(df: pd.DataFrame, output_path: Path) -> None:

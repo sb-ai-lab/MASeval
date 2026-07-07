@@ -42,6 +42,51 @@ build_markdown_report = _ww_build_markdown_report()
 
 REPORTS_DIR = THIS_DIR / "reports"
 
+# Paper Table 6 (arXiv:2602.02475), their trained "AGENTRX" root-cause step
+# localization: Step Acc / Acc@±1 / Acc@±3 / Acc@±5. Used only as a reference
+# column; our judge is untrained and not directly comparable.
+PAPER_TABLE6 = {
+    "tau": {"label": "τ-Bench", "acc": (54.0, 59.8, 72.4, 83.9)},
+    "magentic": {"label": "Magentic-One", "acc": (31.8, 40.9, 47.7, 50.8),
+                 "label2": "Magentic-One*", "acc2": (46.9, 61.7, 72.8, 79.0)},
+    "flash": {"label": "Flash (not released)", "acc": (83.3, 98.4, 100.0, 100.0)},
+}
+
+
+def _table6_section(config: str, summary: dict, gold_scope: str) -> str:
+    """Append a top-1 tolerance sweep next to paper Table 6 (root-cause step)."""
+    ours = tuple(
+        (summary.get(k) or 0.0) * 100
+        for k in ("step_top1_acc", "step_top1_pm1_acc",
+                  "step_top1_pm3_acc", "step_top1_pm5_acc")
+    )
+    ref = PAPER_TABLE6.get(config)
+    lines = [
+        "",
+        "## Paper comparison — Table 6 (root-cause Step Acc, top-1)",
+        "",
+        "Top-1 span (first_idx_mode=top_ranked) vs gold at ±0/±1/±3/±5. The "
+        "paper reports a single predicted root-cause step, so `gold_scope="
+        "root_cause` is the closest analog. Their AGENTRX is a trained method; "
+        "ours is an untrained LLM judge — treat this as orientation, not parity.",
+        "",
+        "| Source | Step Acc | Acc@±1 | Acc@±3 | Acc@±5 |",
+        "|---|---|---|---|---|",
+        f"| Ours ({config} / {gold_scope}) | "
+        + " | ".join(f"{v:.1f}%" for v in ours) + " |",
+    ]
+    if ref:
+        lines.append(
+            f"| Paper AGENTRX — {ref['label']} | "
+            + " | ".join(f"{v:.1f}%" for v in ref["acc"]) + " |"
+        )
+        if "acc2" in ref:
+            lines.append(
+                f"| Paper AGENTRX — {ref['label2']} | "
+                + " | ".join(f"{v:.1f}%" for v in ref["acc2"]) + " |"
+            )
+    return "\n".join(lines) + "\n"
+
 
 def main(
     config: str = "magentic",
@@ -50,6 +95,7 @@ def main(
     gold_scope: str = "all",
     step_tolerance: int = 1,
     verifier_mode: str | None = None,
+    first_idx_mode: str = "top_ranked",
     model_name: str = "unknown",
     output_json_path: str | Path | None = None,
     output_md_path: str | Path | None = None,
@@ -66,6 +112,7 @@ def main(
         gold_scope=gold_scope,
         step_tolerance=step_tolerance,
         verifier_mode=verifier_mode,
+        first_idx_mode=first_idx_mode,
         output_path=output_json_path,
         print_summary=False,
     )
@@ -90,13 +137,15 @@ def main(
         "notes": (
             f"AgentRx / {config}, gold_scope='{gold_scope}'. Spans keyed by the "
             "native 1-based step index (== gold step_number). non_llm_validators "
-            "are not used. NOTE: Step Top-1 uses the lowest-indexed flagged span "
-            "(system/human step), so it is ~0 by construction — read Step Hit / "
-            "Step Hit ±1 for step localization."
+            f"are not used. Step Top-1 uses first_idx_mode='{first_idx_mode}' "
+            "(top_ranked = the model's #1-ranked span), comparable to the paper's "
+            "single-root-cause Step Acc; step_top1_pm1/pm3/pm5 add ±1/±3/±5 "
+            "tolerance to match Table 6's Acc@±k."
         ),
     }
 
     markdown = build_markdown_report(result, report_args)
+    markdown += _table6_section(config, result["summary"], gold_scope)
     Path(output_md_path).parent.mkdir(parents=True, exist_ok=True)
     Path(output_md_path).write_text(markdown, encoding="utf-8")
     result["markdown_report_path"] = str(output_md_path)
@@ -117,6 +166,12 @@ if __name__ == "__main__":
     parser.add_argument("--gold-scope", choices=("all", "root_cause"), default="all")
     parser.add_argument("--step-tolerance", type=int, default=1)
     parser.add_argument("--verifier-mode", choices=("none", "strict", "soft"), default=None)
+    parser.add_argument(
+        "--first-idx-mode",
+        choices=("top_ranked", "min_index"),
+        default="top_ranked",
+        help="How the top-1 predicted span is chosen (default top_ranked).",
+    )
     parser.add_argument("--model", default="unknown", help="Judge model name for the report.")
     args = parser.parse_args()
     main(
@@ -125,5 +180,6 @@ if __name__ == "__main__":
         gold_scope=args.gold_scope,
         step_tolerance=args.step_tolerance,
         verifier_mode=args.verifier_mode,
+        first_idx_mode=args.first_idx_mode,
         model_name=args.model,
     )

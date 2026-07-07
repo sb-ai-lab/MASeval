@@ -18,6 +18,7 @@ Debugger-friendly: call ``run(...)`` directly, or run as a script.
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from typing import Sequence
@@ -103,9 +104,25 @@ if __name__ == "__main__":
 
     def _cached(name: str) -> str:
         import glob
-        hits = glob.glob(
-            f"/home/barak/.cache/huggingface/hub/datasets--Kevin355--Who_and_When/snapshots/*/{name}"
-        )
+
+        cache_roots: list[Path] = []
+        for env_var in ("HUGGINGFACE_HUB_CACHE", "HF_HOME"):
+            value = os.environ.get(env_var)
+            if value:
+                root = Path(value)
+                cache_roots.append(root if root.name == "hub" else root / "hub")
+
+        xdg_cache_home = os.environ.get("XDG_CACHE_HOME")
+        if xdg_cache_home:
+            cache_roots.append(Path(xdg_cache_home) / "huggingface" / "hub")
+
+        cache_roots.append(Path.home() / ".cache" / "huggingface" / "hub")
+
+        hits: list[str] = []
+        for root in cache_roots:
+            hits = glob.glob(str(root / "datasets--Kevin355--Who_and_When" / "snapshots" / "*" / name))
+            if hits:
+                break
         return hits[0] if hits else f"hf://datasets/Kevin355/Who_and_When/{name}"
 
     parser = argparse.ArgumentParser(description="Who&When EvidenceVerifier ablation.")
@@ -115,11 +132,11 @@ if __name__ == "__main__":
     parser.add_argument("--step-tolerance", type=int, default=1)
     args = parser.parse_args()
 
-    V2 = "/mnt/c/Users/barak/maseval-annotate-wt-demo_prompts/examples/who_and_when"
+    V2 = str(THIS_DIR)
     SPECS = {
-        "hc": (f"{V2}/who&when_hc_gemini_findings_v9_report_v2/*.json",
+        "hc": (f"{V2}/who&when_hand_gemini_idx_msg_v2/*.json",
                _cached("Hand-Crafted.parquet"), "Who&When / Hand-Crafted"),
-        "algo": (f"{V2}/who&when_algo_gemini_findings_v9_report_v2/*.json",
+        "algo": (f"{V2}/who&when_algo_gemini_idx_msg_v2/*.json",
                  _cached("Algorithm-Generated.parquet"), "Who&When / Algorithm-Generated"),
     }
     splits = ("hc", "algo") if args.split == "both" else (args.split,)

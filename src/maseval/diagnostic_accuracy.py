@@ -166,6 +166,9 @@ class ExampleComparison:
     predicted_idxs: list[str]
     first_idx: str | None
     step_top1_correct: bool | None
+    step_top1_pm1_correct: bool | None
+    step_top1_pm3_correct: bool | None
+    step_top1_pm5_correct: bool | None
     step_hit_correct: bool | None
     step_hit_pm1_correct: bool | None
     invalid_findings_count: int
@@ -185,6 +188,9 @@ class ExampleComparison:
             "predicted_idxs": self.predicted_idxs,
             "first_idx": self.first_idx,
             "step_top1_correct": self.step_top1_correct,
+            "step_top1_pm1_correct": self.step_top1_pm1_correct,
+            "step_top1_pm3_correct": self.step_top1_pm3_correct,
+            "step_top1_pm5_correct": self.step_top1_pm5_correct,
             "step_hit_correct": self.step_hit_correct,
             "step_hit_pm1_correct": self.step_hit_pm1_correct,
             "invalid_findings_count": self.invalid_findings_count,
@@ -201,6 +207,7 @@ def evaluate_agent_step_accuracy(
     step_tolerance: int = 1,
     build_missing_report: bool = True,
     verifier_mode: str | None = None,
+    first_idx_mode: str | None = None,
 ) -> dict[str, Any]:
     """Compare prediction JSON files with annotations and compute accuracies.
 
@@ -220,6 +227,10 @@ def evaluate_agent_step_accuracy(
         verifier_mode: If not ``None``, rebuild every report under this
             EvidenceVerifier setting (``none``/``strict``/``soft``) for the
             verifier ablation. ``None`` scores the stored report as-is.
+        first_idx_mode: If not ``None``, rebuild every report so the top-1
+            predicted span (``first_problem_idx``) uses this mode
+            (``"min_index"`` or ``"top_ranked"``). ``None`` keeps the stored
+            report's ``first_problem_idx`` (min-index legacy behavior).
 
     Returns:
         JSON-serializable dict with summary metrics and per-example results.
@@ -238,6 +249,7 @@ def evaluate_agent_step_accuracy(
             path,
             build_missing_report=build_missing_report,
             verifier_mode=verifier_mode,
+            first_idx_mode=first_idx_mode,
         )
         for path in sorted(map(Path, prediction_paths), key=lambda p: str(p))
     ]
@@ -276,6 +288,7 @@ def read_prediction_file(
     *,
     build_missing_report: bool = True,
     verifier_mode: str | None = None,
+    first_idx_mode: str | None = None,
 ) -> PredictionRecord:
     """Extract predicted problematic agents and spans from one JSON file.
 
@@ -283,14 +296,20 @@ def read_prediction_file(
     metric outputs under that EvidenceVerifier setting (``none``/``strict``/
     ``soft``), ignoring any stored ``report`` -- so the verifier ablation can be
     scored from the same files.
+
+    When ``first_idx_mode`` is not ``None`` the report is likewise rebuilt so
+    ``first_problem_idx`` (the top-1 predicted span) is chosen under that mode
+    (``"min_index"`` or ``"top_ranked"``), ignoring any stored ``report``.
     """
 
     file_path = Path(path)
     data = json.loads(file_path.read_text(encoding="utf-8"))
 
     report = data.get("report")
-    rebuild = verifier_mode is not None or (
-        not isinstance(report, Mapping) and build_missing_report
+    rebuild = (
+        verifier_mode is not None
+        or first_idx_mode is not None
+        or (not isinstance(report, Mapping) and build_missing_report)
     )
     if rebuild:
         if build_evaluation_report is None:
@@ -298,7 +317,9 @@ def read_prediction_file(
                 "JSON file has no report and maseval.reporting could not be imported."
             )
         report = build_evaluation_report(
-            data, verifier_mode=verifier_mode or "soft"
+            data,
+            verifier_mode=verifier_mode or "soft",
+            first_idx_mode=first_idx_mode or "min_index",
         )
 
     report = report if isinstance(report, Mapping) else {}
@@ -423,12 +444,29 @@ def compare_prediction_to_annotation(
 
     has_gold_idxs = bool(annotation.idxs)
     step_top1_correct = None
+    step_top1_pm1_correct = None
+    step_top1_pm3_correct = None
+    step_top1_pm5_correct = None
     step_hit_correct = None
     step_hit_pm1_correct = None
     if has_gold_idxs:
         step_top1_correct = bool(
             prediction.first_idx
             and _idx_matches_any(prediction.first_idx, annotation.idxs, tolerance=0)
+        )
+        # Top-1 span at wider tolerances, comparable to the paper's
+        # Step Acc / Acc@±1 / ±3 / ±5 single-root-cause metric.
+        step_top1_pm1_correct = bool(
+            prediction.first_idx
+            and _idx_matches_any(prediction.first_idx, annotation.idxs, tolerance=1)
+        )
+        step_top1_pm3_correct = bool(
+            prediction.first_idx
+            and _idx_matches_any(prediction.first_idx, annotation.idxs, tolerance=3)
+        )
+        step_top1_pm5_correct = bool(
+            prediction.first_idx
+            and _idx_matches_any(prediction.first_idx, annotation.idxs, tolerance=5)
         )
         step_hit_correct = any(
             _idx_matches_any(idx_val, annotation.idxs, tolerance=0)
@@ -453,6 +491,9 @@ def compare_prediction_to_annotation(
         predicted_idxs=prediction.idxs,
         first_idx=prediction.first_idx,
         step_top1_correct=step_top1_correct,
+        step_top1_pm1_correct=step_top1_pm1_correct,
+        step_top1_pm3_correct=step_top1_pm3_correct,
+        step_top1_pm5_correct=step_top1_pm5_correct,
         step_hit_correct=step_hit_correct,
         step_hit_pm1_correct=step_hit_pm1_correct,
         invalid_findings_count=prediction.invalid_findings_count,
@@ -478,6 +519,9 @@ def _summarize_comparisons(
         "agent_exact_set_acc": _mean_bool(c.agent_exact_set_correct for c in agent_rows),
         "step_examples": len(step_rows),
         "step_top1_acc": _mean_bool(c.step_top1_correct for c in step_rows),
+        "step_top1_pm1_acc": _mean_bool(c.step_top1_pm1_correct for c in step_rows),
+        "step_top1_pm3_acc": _mean_bool(c.step_top1_pm3_correct for c in step_rows),
+        "step_top1_pm5_acc": _mean_bool(c.step_top1_pm5_correct for c in step_rows),
         "step_hit_acc": _mean_bool(c.step_hit_correct for c in step_rows),
         "step_hit_pm1_acc": _mean_bool(c.step_hit_pm1_correct for c in step_rows),
         "invalid_findings_total": sum(c.invalid_findings_count for c in comparisons),

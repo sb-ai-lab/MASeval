@@ -90,6 +90,7 @@ def build_evaluation_report(
     reference_answer: Any | None = None,
     verification_mode: str | None = None,
     verifier_mode: str = "soft",
+    first_idx_mode: str = "min_index",
 ) -> dict[str, Any]:
     """Build a compact final report from metric findings and evidence checks.
 
@@ -109,6 +110,11 @@ def build_evaluation_report(
             diagnostic predictions -- ``"none"`` (all findings), ``"strict"``
             (only ``verified``), or ``"soft"`` (``verified``/``weak``; ``invalid``
             to review targets). Default ``"soft"`` matches prior behavior.
+        first_idx_mode: How ``first_problem_idx`` (the single top-1 predicted span)
+            is chosen from the ranked ``problematic_idxs`` -- ``"min_index"``
+            (lowest-indexed flagged span; legacy default, keeps Who&When numbers
+            stable) or ``"top_ranked"`` (the model's #1-ranked span, i.e.
+            ``problematic_idxs[0]``, matching a single-root-cause Step Acc metric).
 
     Returns:
         A JSON-serializable dict with ``status`` and ``diagnostic_report``.
@@ -181,7 +187,7 @@ def build_evaluation_report(
     problematic_idxs = _rank_idxs(idx_scores, idx_counts)
     primary_metric = _top_key(metric_scores)
     primary_culprit_agent = problematic_agents[0]["agent"] if problematic_agents else None
-    first_problem_idx = _first_idx(problematic_idxs)
+    first_problem_idx = _first_idx(problematic_idxs, mode=first_idx_mode)
 
     diagnostic_status = {
         "verdict": _diagnostic_verdict(issues, review_targets),
@@ -423,9 +429,15 @@ def _top_key(scores: Mapping[str, float]) -> str | None:
     return max(scores.items(), key=lambda x: (x[1], x[0]))[0]
 
 
-def _first_idx(problematic_idxs: list[Mapping[str, Any]]) -> str | None:
+def _first_idx(
+    problematic_idxs: list[Mapping[str, Any]], mode: str = "min_index"
+) -> str | None:
     if not problematic_idxs:
         return None
+    if mode == "top_ranked":
+        # ``problematic_idxs`` is already ordered by _rank_idxs (findings count,
+        # then score), so index 0 is the model's #1-ranked span.
+        return str(problematic_idxs[0]["idx"])
     return min((str(item["idx"]) for item in problematic_idxs), key=_idx_sort_key)
 
 
