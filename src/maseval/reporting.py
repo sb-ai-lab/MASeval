@@ -89,6 +89,7 @@ def build_evaluation_report(
     predicted_answer: Any | None = None,
     reference_answer: Any | None = None,
     verification_mode: str | None = None,
+    verifier_mode: str = "soft",
 ) -> dict[str, Any]:
     """Build a compact final report from metric findings and evidence checks.
 
@@ -104,6 +105,10 @@ def build_evaluation_report(
         verification_mode: Optional explicit mode. If omitted, it is inferred as
             ``reference_based`` when a reference is available, ``trace_grounded``
             when only a predicted answer is available, otherwise ``unavailable``.
+        verifier_mode: EvidenceVerifier gating for which findings count toward the
+            diagnostic predictions -- ``"none"`` (all findings), ``"strict"``
+            (only ``verified``), or ``"soft"`` (``verified``/``weak``; ``invalid``
+            to review targets). Default ``"soft"`` matches prior behavior.
 
     Returns:
         A JSON-serializable dict with ``status`` and ``diagnostic_report``.
@@ -152,6 +157,7 @@ def build_evaluation_report(
                 finding_index=finding_index,
                 finding=finding,
                 verification=verification,
+                verifier_mode=verifier_mode,
             )
 
             if finding_summary["usable_for_diagnosis"]:
@@ -279,17 +285,42 @@ def _verification_index(evidence_verification: Any) -> dict[str, dict[int, Mappi
     return index
 
 
+def _is_usable(
+    verifier_mode: str,
+    verification: Mapping[str, Any] | None,
+    evidence_status: str,
+) -> bool:
+    """Decide whether a finding counts toward the main diagnostic predictions,
+    under one of three EvidenceVerifier ablation settings:
+
+    * ``"none"``   -- no verifier: every LLM finding is relevant.
+    * ``"strict"`` -- only ``verified`` findings are relevant.
+    * ``"soft"``   -- ``verified``/``weak`` are relevant; ``invalid`` (and any
+      finding without verifier output) goes to review targets. This is the
+      default and reproduces the pre-ablation behavior.
+    """
+    if verifier_mode == "none":
+        return True
+    # strict / soft both require verifier output to admit a finding.
+    if verification is None:
+        return False
+    if verifier_mode == "strict":
+        return evidence_status == "verified"
+    # soft
+    return evidence_status in ("verified", "weak")
+
+
 def _summarize_finding(
     *,
     metric_name: str,
     finding_index: int,
     finding: Mapping[str, Any],
     verification: Mapping[str, Any] | None,
+    verifier_mode: str = "soft",
 ) -> dict[str, Any]:
     severity = str(finding.get("severity_estimate") or "major").lower()
     confidence = str(finding.get("confidence_estimate") or "medium").lower()
     evidence_status = str((verification or {}).get("evidence_status") or "unverified").lower()
-    usable_for_diagnosis = bool((verification or {}).get("usable_for_diagnosis", False))
 
     evidence_item_checks = list((verification or {}).get("evidence_item_checks") or [])
     grounded_evidence_indices = {
@@ -298,10 +329,7 @@ def _summarize_finding(
         if isinstance(item, Mapping) and item.get("quote_found")
     }
 
-    # Without evidence verifier output, be conservative: keep the finding as a
-    # review target instead of using it in the main diagnostic status.
-    if verification is None:
-        usable_for_diagnosis = False
+    usable_for_diagnosis = _is_usable(verifier_mode, verification, evidence_status)
 
     culprit_agents = _extract_culprit_agents(finding)
     problematic_spans = _extract_problematic_spans(finding, evidence_item_checks)

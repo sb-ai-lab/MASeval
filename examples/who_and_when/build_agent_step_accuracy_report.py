@@ -55,6 +55,12 @@ except Exception:  # pragma: no cover - lets debugger load the file directly.
 
 
 DEFAULT_EXPERIMENT_NAME = "Who&When Agent/Step Localization"
+
+_VERIFIER_POLICY = {
+    "none": "no verifier: every LLM finding counts",
+    "strict": "only 'verified' findings count; weak + invalid go to review",
+    "soft": "verified/weak are counted; invalid findings are excluded and left for review",
+}
 DEFAULT_OUTPUT_JSON_PATH = "agent_step_metrics.json"
 DEFAULT_OUTPUT_MD_PATH = "agent_step_metrics.md"
 
@@ -73,6 +79,7 @@ def main(
     step_columns: Sequence[str] | None = None,
     step_tolerance: int = 1,
     build_missing_report: bool = True,
+    verifier_mode: str | None = None,
     top_error_examples: int = 20,
     notes: str | None = None,
     print_summary: bool = True,
@@ -111,6 +118,7 @@ def main(
         step_columns=step_columns,
         step_tolerance=step_tolerance,
         build_missing_report=build_missing_report,
+        verifier_mode=verifier_mode,
         print_summary=False,
     )
 
@@ -128,6 +136,7 @@ def main(
         "step_columns": list(step_columns) if step_columns is not None else None,
         "step_tolerance": step_tolerance,
         "build_missing_report": build_missing_report,
+        "verifier_mode": verifier_mode,
         "top_error_examples": top_error_examples,
         "notes": notes,
     }
@@ -192,7 +201,8 @@ def build_markdown_report(result: dict[str, Any], args: dict[str, Any]) -> str:
         ("Step annotation columns", _fmt_list(args.get("step_columns")) or "auto"),
         ("Step tolerance", f"±{args.get('step_tolerance', 1)}"),
         ("Build missing report", args.get("build_missing_report")),
-        ("EvidenceVerifier policy", "verified/weak are counted; invalid findings are excluded and left for review"),
+        ("Verifier mode (ablation)", args.get("verifier_mode") or "soft (stored)"),
+        ("EvidenceVerifier policy", _VERIFIER_POLICY.get(args.get("verifier_mode") or "soft", _VERIFIER_POLICY["soft"])),
     ]
     for key, value in setup_rows:
         lines.append(f"| {key} | {_md(value)} |")

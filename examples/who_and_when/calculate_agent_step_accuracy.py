@@ -67,6 +67,7 @@ def main(
     step_columns: Sequence[str] | None = None,
     step_tolerance: int = 1,
     build_missing_report: bool = True,
+    verifier_mode: str | None = None,
     print_summary: bool = True,
 ) -> dict:
     """Calculate Agent Acc and Step-level Acc.
@@ -88,6 +89,9 @@ def main(
             zero-based vs one-based off-by-one.
         build_missing_report: If true, build ``report`` when a JSON file does not
             already contain one.
+        verifier_mode: If not ``None``, rebuild reports under this EvidenceVerifier
+            setting (``none``/``strict``/``soft``) for the verifier ablation.
+            ``None`` scores the stored report as-is.
         print_summary: If true, print the summary block to stdout.
 
     Returns:
@@ -112,6 +116,7 @@ def main(
             step_columns=step_columns,
             step_tolerance=step_tolerance,
             build_missing_report=build_missing_report,
+            verifier_mode=verifier_mode,
         )
 
     result["run_config"] = {
@@ -124,6 +129,7 @@ def main(
         "step_columns": list(step_columns) if step_columns is not None else None,
         "step_tolerance": step_tolerance,
         "build_missing_report": build_missing_report,
+        "verifier_mode": verifier_mode,
     }
     result["annotation_source"] = {
         "type": "huggingface_parquet",

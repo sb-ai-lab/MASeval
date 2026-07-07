@@ -190,6 +190,7 @@ def evaluate_agent_step_accuracy(
     step_columns: Sequence[str] | None = None,
     step_tolerance: int = 1,
     build_missing_report: bool = True,
+    verifier_mode: str | None = None,
 ) -> dict[str, Any]:
     """Compare prediction JSON files with annotations and compute accuracies.
 
@@ -206,6 +207,9 @@ def evaluate_agent_step_accuracy(
             zero-based vs one-based off-by-one matches.
         build_missing_report: If true, build ``report`` from metric outputs when
             a JSON file does not already contain one.
+        verifier_mode: If not ``None``, rebuild every report under this
+            EvidenceVerifier setting (``none``/``strict``/``soft``) for the
+            verifier ablation. ``None`` scores the stored report as-is.
 
     Returns:
         JSON-serializable dict with summary metrics and per-example results.
@@ -220,7 +224,11 @@ def evaluate_agent_step_accuracy(
     annotation_index = _build_annotation_index(annotations, id_column=id_column)
 
     predictions = [
-        read_prediction_file(path, build_missing_report=build_missing_report)
+        read_prediction_file(
+            path,
+            build_missing_report=build_missing_report,
+            verifier_mode=verifier_mode,
+        )
         for path in sorted(map(Path, prediction_paths), key=lambda p: str(p))
     ]
 
@@ -257,19 +265,31 @@ def read_prediction_file(
     path: str | Path,
     *,
     build_missing_report: bool = True,
+    verifier_mode: str | None = None,
 ) -> PredictionRecord:
-    """Extract predicted problematic agents and spans from one JSON file."""
+    """Extract predicted problematic agents and spans from one JSON file.
+
+    When ``verifier_mode`` is not ``None`` the report is rebuilt from the raw
+    metric outputs under that EvidenceVerifier setting (``none``/``strict``/
+    ``soft``), ignoring any stored ``report`` -- so the verifier ablation can be
+    scored from the same files.
+    """
 
     file_path = Path(path)
     data = json.loads(file_path.read_text(encoding="utf-8"))
 
     report = data.get("report")
-    if not isinstance(report, Mapping) and build_missing_report:
+    rebuild = verifier_mode is not None or (
+        not isinstance(report, Mapping) and build_missing_report
+    )
+    if rebuild:
         if build_evaluation_report is None:
             raise RuntimeError(
                 "JSON file has no report and maseval.reporting could not be imported."
             )
-        report = build_evaluation_report(data)
+        report = build_evaluation_report(
+            data, verifier_mode=verifier_mode or "soft"
+        )
 
     report = report if isinstance(report, Mapping) else {}
     diagnostic_report = report.get("diagnostic_report") or {}
