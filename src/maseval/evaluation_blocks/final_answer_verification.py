@@ -28,6 +28,8 @@ class FinalAnswerVerificationResult(BaseModel):
     verdict: Verdict
     confidence: Confidence
     method: VerificationMethod
+    predicted_answer: str | None = None
+    reference_answer: str | None = None
 
 
 class FinalAnswerVerifier:
@@ -58,10 +60,12 @@ class FinalAnswerVerifier:
         if final_answer != gt:
             return await self._call_equivalence_judge(final_answer, gt)
 
-        return FinalAnswerVerificationResult(
+        return self._make_result(
             verdict="ideal",
             confidence=Confidence.HIGH,
             method="direct_comp",
+            predicted_answer=final_answer,
+            reference_answer=gt,
         )
 
     async def _call_mas_task_completion_judge(self, trace: Any) -> FinalAnswerVerificationResult:
@@ -125,10 +129,29 @@ class FinalAnswerVerifier:
         else:
             confidence = self._confidence_from_score(1.0 - similarity)
 
-        return FinalAnswerVerificationResult(
+        return self._make_result(
             verdict="ideal" if is_equivalent else "poor",
             confidence=confidence,
             method="equivalence_judge",
+            predicted_answer=final_answer,
+            reference_answer=gt,
+        )
+
+    @staticmethod
+    def _make_result(
+        *,
+        verdict: Verdict,
+        confidence: Confidence,
+        method: VerificationMethod,
+        predicted_answer: str | None = None,
+        reference_answer: str | None = None,
+    ) -> FinalAnswerVerificationResult:
+        return FinalAnswerVerificationResult(
+            verdict=verdict,
+            confidence=confidence,
+            method=method,
+            predicted_answer=predicted_answer,
+            reference_answer=reference_answer,
         )
 
     def _convert_mtc_result(self, result: MetricResult) -> FinalAnswerVerificationResult:
@@ -139,7 +162,7 @@ class FinalAnswerVerifier:
             verdict = "poor"
             confidence = result.findings[0].confidence_estimate
 
-        return FinalAnswerVerificationResult(
+        return self._make_result(
             verdict=verdict,
             confidence=confidence,
             method="mtc_judge",
