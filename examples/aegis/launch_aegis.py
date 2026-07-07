@@ -158,7 +158,7 @@ async def main(input_path: str, out_dir: str, model_name: str, from_idx: int, li
         payload: dict = {}
         payload.update(_serialize_findings(findings_results))
         payload["evidence_verification"] = _serialize_evidence(evidence_results)
-        payload["non_llm_validators"] = run_on_trace(rec)
+        payload["non_llm_validators"] = run_on_trace(rec.get("input") or rec)
         payload["reference_answer"] = gt_answer
         payload["report"] = build_evaluation_report(payload, reference_answer=gt_answer)
 

@@ -284,21 +284,6 @@ class BaseValidator(ABC):
         }
 
 
-def _aegis_steps(trace: Any) -> list | None:
-    if not isinstance(trace, dict):
-        return None
-    steps = trace.get("conversation_history")
-    if not isinstance(steps, list):
-        inp = trace.get("input")
-        steps = inp.get("conversation_history") if isinstance(inp, dict) else None
-    if not isinstance(steps, list) or not steps:
-        return None
-    first = next((s for s in steps if isinstance(s, dict)), None)
-    if first is not None and "agent_name" in first and ({"step", "content", "phase"} & set(first)):
-        return steps
-    return None
-
-
 def detect_format(trace: Any) -> str:
     """Detect the schema format of an input trace structure.
 
@@ -310,9 +295,6 @@ def detect_format(trace: Any) -> str:
     """
     if isinstance(trace, dict):
         keys = set(trace)
-
-        if _aegis_steps(trace) is not None:
-            return "aegis"
 
         spans = trace.get("spans")
         if isinstance(spans, list) and spans:
@@ -632,22 +614,6 @@ def pumpkin_to_spans(trace: dict) -> list[Span]:
     return spans
 
 
-def aegis_to_spans(trace: Any) -> list[Span]:
-    steps = _aegis_steps(trace) or []
-    spans: list[Span] = []
-    for i, st in enumerate(steps):
-        if not isinstance(st, dict):
-            spans.append({"idx": str(i), "text": _flatten(st), "agent": None})
-            continue
-        step_no = st.get("step")
-        idx = str(step_no) if step_no is not None else str(i)
-        agent = st.get("agent_name") or None
-        content = st.get("content")
-        text = _flatten(content) if content is not None else _flatten(st)
-        spans.append({"idx": idx, "text": text, "agent": agent})
-    return spans
-
-
 def unknown_to_spans(trace: Any) -> list[Span]:
     """Convert unrecognized format trace into normalized spans.
 
@@ -678,9 +644,19 @@ def unknown_to_spans(trace: Any) -> list[Span]:
     else:
         objects = [trace]
     return [
-        {"idx": str(i), "text": _flatten(o), "agent": None}
+        {"idx": str(i), "text": _flatten(o), "agent": _unknown_agent(o)}
         for i, o in enumerate(objects)
     ]
+
+
+def _unknown_agent(obj: Any) -> str | None:
+    if not isinstance(obj, dict):
+        return None
+    for key in ("agent_name", "agent"):
+        value = obj.get(key)
+        if value:
+            return str(value)
+    return None
 
 
 def to_spans(trace: Any) -> tuple[str, list[Span]]:
@@ -702,8 +678,6 @@ def to_spans(trace: Any) -> tuple[str, list[Span]]:
         spans = who_and_when_to_spans(trace)
     elif fmt == "pumpkin":
         spans = pumpkin_to_spans(trace)
-    elif fmt == "aegis":
-        spans = aegis_to_spans(trace)
     else:
         spans = unknown_to_spans(trace)
 
