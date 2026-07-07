@@ -21,8 +21,8 @@ decisive failure.
 
 **Span alignment (the load-bearing invariant):** gold `step_number` *is* the step
 `index`, so spans are keyed by `str(step["index"])` and the LLM cites that number
-in `evidence[i].span_id`. Never enumerate positions — that would offset spans out
-of the gold's index space. See `agentrx_data.format_trace` / `span_ids`.
+in `evidence[i].idx`. Never enumerate positions — that would offset spans out
+of the gold's index space. See `agentrx_data.format_trace` / `idxs`.
 
 ## Files
 

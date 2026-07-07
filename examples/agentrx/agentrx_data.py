@@ -11,9 +11,10 @@ a *trajectory* file and an *annotation* file:
   (== the trajectory step ``index``), ``failed_agent`` and ``failure_category``.
 
 Gold ``step_number`` **is** the step ``index``, so spans MUST be keyed by
-``step["index"]`` (see :func:`format_trace` / :func:`span_ids`), never by an
-enumerate position -- otherwise findings land in a different index space than the
-gold and localization silently misaligns.
+``step["index"]`` (see :func:`format_trace` / :func:`idxs`), never by an enumerate
+position -- otherwise findings land in a different index space than the gold and
+localization silently misaligns. (Evaluators cite the step index in
+``evidence[i].idx``.)
 
 Two configs:
 
@@ -174,8 +175,8 @@ def step_text(step: dict[str, Any]) -> str:
     return "\n".join(p for p in parts if p)
 
 
-def span_ids(steps: list[dict[str, Any]]) -> list[str]:
-    """The span-id space for a trajectory: each step's native 1-based index."""
+def idxs(steps: list[dict[str, Any]]) -> list[str]:
+    """The idx (span-id) space for a trajectory: each step's native 1-based index."""
     return [str(s.get("index")) for s in steps]
 
 
@@ -183,14 +184,14 @@ def format_trace(steps: list[dict[str, Any]], instruction: str) -> str:
     """Render a trajectory for an LLM evaluator.
 
     Each step is prefixed with its **native 1-based step index** (== gold
-    ``step_number``); evaluators cite that number in ``evidence[i].span_id``.
+    ``step_number``); evaluators cite that number in ``evidence[i].idx``.
     """
     lines = [
         "USER INSTRUCTION:",
         str(instruction),
         "",
         "TRACE STEPS (each step is prefixed with its 1-based step number in "
-        "square brackets; cite that number in evidence[i].span_id):",
+        "square brackets; cite that number in evidence[i].idx):",
     ]
     for step in steps:
         lines.append(f"[{step.get('index')}] {step_text(step)}")
@@ -242,6 +243,6 @@ if __name__ == "__main__":
         print(f"{cfg}: {len(exs)} annotated trajectories")
         e = exs[0]
         print(f"  ex0 trajectory_id={e.trajectory_id} steps={len(e.steps)} "
-              f"span_ids[:5]={span_ids(e.steps)[:5]}")
+              f"idxs[:5]={idxs(e.steps)[:5]}")
         print(f"  ex0 gold: agents={e.all_failed_agents} steps={e.all_failure_steps} "
               f"root_cause=({e.root_cause_agent}, {e.root_cause_step})")
