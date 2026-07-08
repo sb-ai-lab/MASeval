@@ -628,9 +628,19 @@ def unknown_to_spans(trace: Any) -> list[Span]:
     else:
         objects = [trace]
     return [
-        {"idx": str(i), "text": _flatten(o), "agent": None}
+        {"idx": str(i), "text": _flatten(o), "agent": _unknown_agent(o)}
         for i, o in enumerate(objects)
     ]
+
+
+def _unknown_agent(obj: Any) -> str | None:
+    if not isinstance(obj, dict):
+        return None
+    for key in ("agent_name", "agent"):
+        value = obj.get(key)
+        if value:
+            return str(value)
+    return None
 
 
 def to_spans(trace: Any) -> tuple[str, list[Span]]:

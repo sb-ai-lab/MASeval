@@ -199,6 +199,7 @@ class FinalAnswerVerifier:
             "trail_swe": self._extract_final_answer_trail_swe,
             "ghost": self._extract_final_answer_ghost,
             "who_and_when": self._extract_final_answer_who_and_when,
+            "aegis": self._extract_final_answer_aegis,
         }
 
         try:
@@ -231,6 +232,22 @@ class FinalAnswerVerifier:
             return trace["spans"][0]["logs"][0]["body"]["function.output"]
 
         raise ValueError("No response in trace")
+
+    def _extract_final_answer_aegis(self, trace: Any) -> str | None:
+        rec = trace if isinstance(trace, dict) else {}
+        inp = rec.get("input") or {}
+
+        final_output = inp.get("final_output")
+        if final_output:
+            return str(final_output)
+
+        history = inp.get("conversation_history") or []
+        for state in reversed(history):
+            content = state.get("content") if isinstance(state, dict) else None
+            if content:
+                return str(content)
+
+        return None
 
     def _extract_final_answer_who_and_when(self, trace: Any) -> str | None:
         history = trace["history"] if isinstance(trace, dict) else trace
