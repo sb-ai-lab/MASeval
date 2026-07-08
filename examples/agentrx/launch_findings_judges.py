@@ -2,7 +2,8 @@
 
 Mirrors the Who&When findings runner, but for AgentRx:
   * spans are keyed by the native 1-based step ``index`` (== gold ``step_number``);
-  * no FinalAnswerVerifier (AgentRx has no gold final answer);
+  * FinalAnswerVerifier runs in its no-ground-truth mode (the MAS Task
+    Completion judge), which needs no gold final answer -- AgentRx has none;
   * no deterministic ``non_llm_validators`` (AgentRx is not a validator format;
     running them would emit misaligned spans).
 
@@ -41,6 +42,10 @@ for p in (ROOT / "src", THIS_DIR):
     if str(p) not in sys.path:
         sys.path.insert(0, str(p))
 
+from maseval.evaluation_blocks.final_answer_verification import (  # noqa: E402
+    FinalAnswerVerificationResult,
+    FinalAnswerVerifier,
+)
 from maseval.metrics import EvidenceVerifier, MetricType, create_metric  # noqa: E402
 from maseval.models import RawTraceInput  # noqa: E402
 from maseval.reporting import build_evaluation_report  # noqa: E402
@@ -100,19 +105,46 @@ def _serialize_evidence_verification(evidence_results: dict) -> dict:
     }
 
 
-async def _evaluate_example(model, ex, folder: Path, result_file_name: str) -> None:
+async def _run_final_answer_verification(
+    final_answer_verifier: FinalAnswerVerifier, ex
+) -> FinalAnswerVerificationResult | None:
+    """Run FinalAnswerVerifier in no-ground-truth mode for one trajectory.
+
+    With ``gt=None`` the verifier routes to the MAS Task Completion judge, which
+    assesses whether the task was completed from the trace alone (no gold answer
+    needed). ``df`` only needs to be non-None here. The trace is passed
+    structured (instruction + steps) so the judge knows what "complete" means.
+    """
+    try:
+        return await final_answer_verifier.verify_final_answer(
+            {"instruction": ex.instruction, "steps": ex.steps},
+            gt=None,
+            df="agentrx",
+        )
+    except Exception as exc:  # noqa: BLE001 - one judge failure must not abort a trajectory
+        print(f"      final_answer_verification error: {type(exc).__name__}: {exc}")
+        return None
+
+
+async def _evaluate_example(
+    model, ex, folder: Path, result_file_name: str, final_answer_verifier
+) -> None:
     """Evaluate one AgentRx trajectory and write its per-trajectory JSON."""
     eval_input = RawTraceInput(
         trace=agentrx_data.format_trace(ex.steps, ex.instruction)
     )
     findings_results = await _run_all_metrics(model, eval_input)
     evidence_results = EvidenceVerifier().verify_all(findings_results, eval_input)
+    final_answer_result = await _run_final_answer_verification(final_answer_verifier, ex)
 
     payload = _serialize_findings(findings_results)
     # Top-level id so the scorer can match by trajectory_id as well as by
     # filename index (trajectory_id is one of maseval's metadata id keys).
     payload["trajectory_id"] = ex.trajectory_id
     payload["evidence_verification"] = _serialize_evidence_verification(evidence_results)
+    # No-GT MAS task-completion verdict; feeds the report's answer_status.
+    if final_answer_result is not None:
+        payload["final_answer_verification"] = final_answer_result.model_dump(mode="json")
     # AgentRx gold (for downstream inspection; scoring uses the gold table).
     payload["agentrx_meta"] = {
         "trajectory_id": ex.trajectory_id,
@@ -122,7 +154,8 @@ async def _evaluate_example(model, ex, folder: Path, result_file_name: str) -> N
         "root_cause_agent": ex.root_cause_agent,
         "root_cause_step": ex.root_cause_step,
     }
-    # AgentRx has no gold final answer -> reference_based answer status is unavailable.
+    # AgentRx has no gold final answer -> reference_based answer status is
+    # unavailable; answer_status comes from the no-GT task-completion verdict.
     payload["report"] = build_evaluation_report(payload, reference_answer=None)
 
     folder.mkdir(parents=True, exist_ok=True)
@@ -149,6 +182,7 @@ async def main(
         provider="openrouter",
         settings={"temperature": 0.0, "max_tokens": MAX_OUTPUT_TOKENS},
     )
+    final_answer_verifier = FinalAnswerVerifier(model=model_name)
 
     examples = agentrx_data.load_examples(config)
     folder = THIS_DIR / (folder_name or f"agentrx_{config}_findings")
@@ -162,7 +196,7 @@ async def main(
             print(f"[{ex.row_index}] exists, skipping")
             continue
         print(f"\n=== [{ex.row_index}] {ex.trajectory_id} ({len(ex.steps)} steps) ===")
-        await _evaluate_example(model, ex, folder, result_file_name)
+        await _evaluate_example(model, ex, folder, result_file_name, final_answer_verifier)
 
 
 if __name__ == "__main__":

@@ -70,6 +70,9 @@ class FinalAnswerVerifier:
             provider="openrouter",
             settings={
                 "temperature": 0.0,
+                # Large traces (AgentRx magentic runs ~300k chars) can exceed the
+                # client's default request timeout; allow a generous window.
+                "timeout": float(os.environ.get("MTC_JUDGE_TIMEOUT", "600")),
             },
         )
 
