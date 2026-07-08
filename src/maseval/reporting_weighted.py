@@ -20,6 +20,8 @@ import re
 from collections import Counter, defaultdict
 from typing import Any, Mapping
 
+from maseval.reporting import _answer_status_from_final_answer_verification
+
 DEPRECATED_METRIC_NAMES = {"mas_task_completion", "MAS_TASK_COMPLETION"}
 
 NON_FINDING_KEYS = {
@@ -111,11 +113,17 @@ def build_weighted_evaluation_report(
 
     predicted_answer = _infer_predicted_answer(evaluation, predicted_answer)
     reference_answer = _infer_reference_answer(evaluation, reference_answer)
-    answer_status = _answer_status_from_existing_report(
+    answer_status = _answer_status_from_final_answer_verification(
         evaluation,
         predicted_answer=predicted_answer,
         reference_answer=reference_answer,
     )
+    if answer_status is None:
+        answer_status = _answer_status_from_existing_report(
+            evaluation,
+            predicted_answer=predicted_answer,
+            reference_answer=reference_answer,
+        )
     if answer_status is None:
         answer_status = _build_answer_status(
             predicted_answer=predicted_answer,
@@ -571,6 +579,11 @@ def _build_answer_status(*, predicted_answer: Any | None, reference_answer: Any 
 def _infer_predicted_answer(evaluation: Mapping[str, Any], explicit: Any | None) -> Any | None:
     if explicit is not None:
         return explicit
+    final_answer_verification = evaluation.get("final_answer_verification")
+    if isinstance(final_answer_verification, Mapping):
+        verified = final_answer_verification.get("predicted_answer")
+        if verified is not None:
+            return verified
     for key in ANSWER_KEY_CANDIDATES:
         value = evaluation.get(key)
         if value is not None:
@@ -587,6 +600,11 @@ def _infer_predicted_answer(evaluation: Mapping[str, Any], explicit: Any | None)
 def _infer_reference_answer(evaluation: Mapping[str, Any], explicit: Any | None) -> Any | None:
     if explicit is not None:
         return explicit
+    final_answer_verification = evaluation.get("final_answer_verification")
+    if isinstance(final_answer_verification, Mapping):
+        verified = final_answer_verification.get("reference_answer")
+        if verified is not None:
+            return verified
     for key in REFERENCE_KEY_CANDIDATES:
         value = evaluation.get(key)
         if value is not None:

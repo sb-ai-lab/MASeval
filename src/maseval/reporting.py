@@ -482,11 +482,17 @@ def _answer_status_from_final_answer_verification(
     if not isinstance(final_answer_verification, Mapping):
         return None
     answer_status = dict(final_answer_verification)
+    verified_predicted = answer_status.get("predicted_answer")
+    verified_reference = answer_status.get("reference_answer")
     answer_status["predicted_answer"] = (
-        None if predicted_answer is None else str(predicted_answer)
+        verified_predicted
+        if verified_predicted is not None
+        else (None if predicted_answer is None else str(predicted_answer))
     )
     answer_status["reference_answer"] = (
-        None if reference_answer is None else str(reference_answer)
+        verified_reference
+        if verified_reference is not None
+        else (None if reference_answer is None else str(reference_answer))
     )
     return answer_status
 
@@ -515,6 +521,11 @@ def _answer_status_from_existing_report(
 def _infer_predicted_answer(evaluation: Mapping[str, Any], explicit: Any | None) -> Any | None:
     if explicit is not None:
         return explicit
+    final_answer_verification = evaluation.get("final_answer_verification")
+    if isinstance(final_answer_verification, Mapping):
+        verified = final_answer_verification.get("predicted_answer")
+        if verified is not None:
+            return verified
     for key in ANSWER_KEY_CANDIDATES:
         value = evaluation.get(key)
         if value is not None:
@@ -530,6 +541,11 @@ def _infer_predicted_answer(evaluation: Mapping[str, Any], explicit: Any | None)
 def _infer_reference_answer(evaluation: Mapping[str, Any], explicit: Any | None) -> Any | None:
     if explicit is not None:
         return explicit
+    final_answer_verification = evaluation.get("final_answer_verification")
+    if isinstance(final_answer_verification, Mapping):
+        verified = final_answer_verification.get("reference_answer")
+        if verified is not None:
+            return verified
     for key in REFERENCE_KEY_CANDIDATES:
         value = evaluation.get(key)
         if value is not None:
