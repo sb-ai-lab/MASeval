@@ -177,14 +177,12 @@ def _load_records(filepath):
     return records
 
 
-def evaluate_results(filepath, normalize=True):
+def evaluate_results(filepath):
     total_samples = 0
     valid_samples = 0
     agent_exact_matches = 0
 
     all_true_agents, all_pred_agents = [], []
-
-    norm = _normalize_agent if normalize else (lambda x: str(x))
 
     for data in _load_records(filepath):
         total_samples += 1
@@ -194,8 +192,8 @@ def evaluate_results(filepath, normalize=True):
 
         valid_samples += 1
 
-        true_agent_set = set(norm(a) for a in gold)
-        pred_agent_set = set(norm(a) for a in pred)
+        true_agent_set = set(_normalize_agent(a) for a in gold)
+        pred_agent_set = set(_normalize_agent(a) for a in pred)
 
         all_true_agents.append(true_agent_set)
         all_pred_agents.append(pred_agent_set)
@@ -225,9 +223,7 @@ def evaluate_results(filepath, normalize=True):
         "Note: agent level only; AEGIS error_type uses the MAST taxonomy "
         "(FM-*), which the MASeval pipeline does not predict."
     )
-    print(
-        f"Agent-name matching: {'normalized (lowercased, alnum-only)' if normalize else 'verbatim (exact)'}."
-    )
+    print("Agent-name matching: normalized (lowercased, alnum-only).")
     for section_name, metrics in results.items():
         print(f"\n[{section_name}]")
         for metric_name, value in metrics.items():
@@ -248,12 +244,6 @@ if __name__ == "__main__":
         default=str(here / "aegis_findings"),
         help="Path to results directory or JSONL file",
     )
-    parser.add_argument(
-        "--no-normalize",
-        action="store_true",
-        help="Match agent names verbatim (exact), like the AutoJudge reference, "
-        "instead of the repo's lowercased/alnum-only normalization.",
-    )
     args = parser.parse_args()
 
-    evaluate_results(args.file_path, normalize=not args.no_normalize)
+    evaluate_results(args.file_path)
