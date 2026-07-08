@@ -39,6 +39,7 @@ trace.set_tracer_provider(None)
 from pydantic_ai.models.openai import OpenAIChatModel
 from rich import print
 
+from maseval.evaluation_blocks.final_answer_verification import FinalAnswerVerifier
 from maseval.metrics import EvidenceVerifier, MetricType, create_metric
 from maseval.models import RawTraceInput
 from maseval.reporting import build_evaluation_report
@@ -64,6 +65,25 @@ def _aegis_steps(rec: dict) -> list:
     inp = rec.get("input") or {}
     steps = inp.get("conversation_history")
     return steps if isinstance(steps, list) else []
+
+
+def _aegis_predicted_answer(rec: dict) -> str | None:
+    """Same extraction FinalAnswerVerifier uses internally, surfaced for the report.
+
+    build_evaluation_report's generic predicted-answer inference only recognizes a
+    literal ``FINAL ANSWER:`` marker in the trace text (the WW convention); AEGIS
+    traces carry the answer in `input.final_output` instead, so it must be passed
+    in explicitly or `report.status.answer_status.predicted_answer` stays null.
+    """
+    inp = rec.get("input") or {}
+    final_output = inp.get("final_output")
+    if final_output:
+        return str(final_output)
+    for state in reversed(inp.get("conversation_history") or []):
+        content = state.get("content") if isinstance(state, dict) else None
+        if content:
+            return str(content)
+    return None
 
 
 def _format_step(step) -> str:
@@ -121,6 +141,14 @@ def _serialize_evidence(evidence_results: dict) -> dict:
     return {name: r.model_dump(mode="json") for name, r in evidence_results.items()}
 
 
+async def _run_final_answer_verification(verifier: FinalAnswerVerifier, rec: dict, gt_answer):
+    try:
+        return await verifier.verify_final_answer(rec, gt=gt_answer, df="aegis")
+    except Exception as e:  # noqa: BLE001 - final-answer verification is best-effort
+        print(f"  [skip] final_answer_verification: {e}")
+        return None
+
+
 async def main(input_path: str, out_dir: str, model_name: str, from_idx: int, limit: int | None):
     records = []
     with open(input_path, encoding="utf-8") as f:
@@ -134,6 +162,7 @@ async def main(input_path: str, out_dir: str, model_name: str, from_idx: int, li
     out.mkdir(parents=True, exist_ok=True)
 
     model = OpenAIChatModel(model_name, provider="openrouter", settings={"temperature": 0.0})
+    final_answer_verifier = FinalAnswerVerifier(model=model_name)
 
     end = len(records) if limit is None else min(len(records), from_idx + limit)
     for idx in range(from_idx, end):
@@ -149,6 +178,9 @@ async def main(input_path: str, out_dir: str, model_name: str, from_idx: int, li
         evidence_results = EvidenceVerifier().verify_all(findings_results, eval_input)
 
         gt_answer = (rec.get("ground_truth") or {}).get("correct_answer")
+        final_answer_result = await _run_final_answer_verification(
+            final_answer_verifier, rec, gt_answer
+        )
 
         # WW-shaped payload: metric findings live at the TOP LEVEL (that is what
         # reporting._iter_metric_results / diagnostic_accuracy expect), alongside
@@ -160,7 +192,13 @@ async def main(input_path: str, out_dir: str, model_name: str, from_idx: int, li
         payload["evidence_verification"] = _serialize_evidence(evidence_results)
         payload["non_llm_validators"] = run_on_trace(rec.get("input") or rec)
         payload["reference_answer"] = gt_answer
-        payload["report"] = build_evaluation_report(payload, reference_answer=gt_answer)
+        if final_answer_result is not None:
+            payload["final_answer_verification"] = final_answer_result.model_dump(mode="json")
+        payload["report"] = build_evaluation_report(
+            payload,
+            predicted_answer=_aegis_predicted_answer(rec),
+            reference_answer=gt_answer,
+        )
 
         # AEGIS-specific extras — ignored by the report builder (they lack the
         # metric_name/findings shape), used later for scoring against ground truth.
