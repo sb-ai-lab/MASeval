@@ -42,24 +42,10 @@ _ERROR_SIGNAL = re.compile(
     re.IGNORECASE,
 )
 
-_WS_RUN = re.compile(r"(?:(?<!\\)\\[nrt]|\s)+")
-
-
 def _quote(text: str, start: int, end: int) -> str:
     a = max(0, start - QUOTE_RADIUS)
     b = min(len(text), end + QUOTE_RADIUS)
-    snippet = _WS_RUN.sub(" ", text[a:b]).strip()
-    if a > 0:
-        cut = snippet.find(" ")
-        if 0 <= cut <= 15:
-            snippet = snippet[cut + 1 :]
-        snippet = "…" + snippet
-    if b < len(text):
-        cut = snippet.rfind(" ")
-        if cut >= len(snippet) - 15:
-            snippet = snippet[:cut]
-        snippet = snippet + "…"
-    return snippet
+    return text[a:b]
 
 
 def runtime_exception_pattern(names: str) -> str:
@@ -257,13 +243,11 @@ class BaseValidator(ABC):
         else:
             # Offset-less check: anchor on the first error signal rather than the
             # span head (which is typically the re-fed prompt). Fall back to a
-            # cleaned head only when no signal is present.
             m = _ERROR_SIGNAL.search(text)
             if m:
                 quote = _quote(text, m.start(), m.end())
             else:
-                head = _WS_RUN.sub(" ", text[:QUOTE_FALLBACK]).strip()
-                quote = head + "…" if len(text) > QUOTE_FALLBACK else head
+                quote = text[:QUOTE_FALLBACK]
         return {
             "metric_name": metric_name,
             "explanation": explanation,
