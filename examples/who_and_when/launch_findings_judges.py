@@ -421,45 +421,49 @@ async def _evaluate_task_traced(
 
 
 if __name__ == "__main__":
-    # df_handcrafted = pd.read_parquet(
-    #     "hf://datasets/Kevin355/Who_and_When/Hand-Crafted.parquet"
-    # )
+    import argparse
 
-    # # Resume support: read FROM_IDX from env (default 0). Useful when the
-    # # script is interrupted and you want to continue from a specific task.
-    # try:
-    #     from_idx = int(os.environ.get("FROM_IDX", "0"))
-    # except ValueError:
-    #     from_idx = 0
-    # from_idx = 0
-
-    # asyncio.run(
-    #     main(
-    #         model_name="google/gemini-2.5-flash",
-    #         enable_tracing=True,
-    #         df=df_handcrafted,
-    #         result_file_name="gemini_findings_",
-    #         folder_name="who&when_hand_gemini_idx_msg_v2",
-    #         from_idx=from_idx,
-    #     )
-    # )
-
+    df_hc = pd.read_parquet(
+        "hf://datasets/Kevin355/Who_and_When/Hand-Crafted.parquet"
+    )
     df_algo = pd.read_parquet(
         "hf://datasets/Kevin355/Who_and_When/Algorithm-Generated.parquet"
     )
 
+    # Resume support: read FROM_IDX from env (default 0). Useful when the
+    # script is interrupted and you want to continue from a specific task.
     try:
         from_idx = int(os.environ.get("FROM_IDX", "0"))
     except ValueError:
         from_idx = 0
 
-    asyncio.run(
-        main(
-            model_name="google/gemini-2.5-flash",
-            enable_tracing=True,
-            df=df_algo,
-            result_file_name="gemini_findings_",
-            folder_name="who&when_algo_gemini_idx_msg_v2",
-            from_idx=from_idx,
-        )
+    parser = argparse.ArgumentParser(description="Run Who&When findings judges.")
+    parser.add_argument(
+        "--run",
+        choices=("hc", "algo", "both"),
+        default="both",
+        help="Which dataset(s) to evaluate.",
     )
+    args = parser.parse_args()
+
+    async def _run_selected(selected_run: str):
+        if selected_run in ("algo", "both"):
+            await main(
+                model_name="google/gemini-2.5-flash",
+                enable_tracing=True,
+                df=df_algo,
+                result_file_name="gemini_findings_",
+                folder_name="who&when_algo_gemini_idx_msg_v2",
+                from_idx=from_idx,
+            )
+        if selected_run in ("hc", "both"):
+            await main(
+                model_name="google/gemini-2.5-flash",
+                enable_tracing=True,
+                df=df_hc,
+                result_file_name="gemini_findings_",
+                folder_name="who&when_hand_gemini_idx_msg_v2",
+                from_idx=from_idx,
+            )
+
+    asyncio.run(_run_selected(args.run))
