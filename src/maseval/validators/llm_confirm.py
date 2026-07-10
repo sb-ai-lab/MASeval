@@ -261,12 +261,22 @@ def build_llm_input(
     raw_spans: list[dict[str, Any]],
     window: int = _WINDOW,
     max_span_chars: int = _MAX_SPAN_CHARS,
+    read_window: int | None = None,
 ) -> tuple[dict[str, Any], dict[str, tuple[str, dict[str, Any]]]]:
     """Assemble the per-trace LLM payload and an id->(metric_name, finding) map.
 
-    Candidate spans for appointing are a ``±window`` neighborhood (flattened
-    pre-order) around each finding's current span. The ``spans`` dict carries the
-    full raw text of every referenced span, deduped across findings.
+    Two independent knobs control span exposure (kept separate deliberately):
+
+    * **appoint candidates** (``window``): ``corrected_idx`` may only be a span in
+      the ``±window`` neighborhood of a finding's current span. On Who&When every
+      real appointment lands within ±4 of the surface span, so this stays tight —
+      it bounds where the causal turn can be, and ``_apply`` enforces it.
+    * **reading view** (``read_window``): which spans' full text the model may
+      *read* to judge confirmed-vs-benign. Confirmation must trace FORWARD ("did a
+      later span actually deliver the needed data?"), which a ±window cannot reach.
+      ``read_window=None`` exposes the WHOLE trace (judge-like view); an int
+      exposes a forward-biased neighborhood (``-window`` back, ``+read_window``
+      forward) to bound context on very large traces.
     """
     order = {s["idx"]: i for i, s in enumerate(raw_spans)}
     by_id = {s["idx"]: s for s in raw_spans}
@@ -274,7 +284,7 @@ def build_llm_input(
 
     findings_payload: list[dict[str, Any]] = []
     id_map: dict[str, tuple[str, dict[str, Any]]] = {}
-    referenced: set[str] = set()
+    read_ids: set[str] = set()
 
     for fid, metric_name, finding in _iter_findings(result):
         id_map[fid] = (metric_name, finding)
@@ -282,13 +292,18 @@ def build_llm_input(
         candidates: list[str] = []
         if cur is not None and cur in order:
             i = order[cur]
+            # Appoint candidates: tight symmetric window.
             lo, hi = max(0, i - window), min(n, i + window + 1)
             candidates = [raw_spans[j]["idx"] for j in range(lo, hi)]
+            # Reading view: forward-biased (or whole trace when read_window is None).
+            if read_window is None:
+                r_lo, r_hi = 0, n
+            else:
+                r_lo, r_hi = max(0, i - window), min(n, i + read_window + 1)
+            read_ids.update(raw_spans[j]["idx"] for j in range(r_lo, r_hi))
         elif cur is not None:
             candidates = [cur]
-        referenced.update(candidates)
-        if cur is not None:
-            referenced.add(cur)
+            read_ids.add(cur)
         ev = finding.get("evidence") or []
         findings_payload.append(
             {
@@ -302,8 +317,12 @@ def build_llm_input(
             }
         )
 
+    # When read_window is None, expose every span (deduped) regardless of findings.
+    if read_window is None:
+        read_ids.update(by_id.keys())
+
     spans_payload: dict[str, Any] = {}
-    for sid in referenced:
+    for sid in read_ids:
         s = by_id.get(sid)
         if s is None:
             continue
@@ -404,17 +423,23 @@ async def confirm_trace_async(
     result: dict[str, Any],
     model: Any,
     agent: Any | None = None,
+    read_window: int | None = None,
 ) -> dict[str, Any]:
     """Confirm + appoint the deterministic ``result`` for one trace (in place).
 
     No-op (returns ``result`` unchanged) when there are no deterministic findings.
     Attaches ``finding["llm_confirmation"]`` to every finding and records a
     ``result["llm_confirmation_summary"]`` roll-up.
+
+    ``read_window`` sets the confirmer's reading view (see :func:`build_llm_input`):
+    ``None`` gives it the WHOLE trace like a judge (right for small traces such as
+    Who&When); an int forward-bounds context for very large traces. Appointing
+    stays on the tight ``_WINDOW`` regardless.
     """
     if not any(True for _ in _iter_findings(result)):
         return result
     _fmt, raw = build_raw_spans(trace)
-    llm_input, id_map = build_llm_input(result, raw)
+    llm_input, id_map = build_llm_input(result, raw, read_window=read_window)
     agent = agent or build_agent(model)
     run = await agent.run(json.dumps(llm_input, ensure_ascii=False, default=str))
     trace_conf: TraceConfirmation = run.output
@@ -427,6 +452,9 @@ def confirm_trace(
     result: dict[str, Any],
     model: Any,
     agent: Any | None = None,
+    read_window: int | None = None,
 ) -> dict[str, Any]:
     """Synchronous convenience wrapper around :func:`confirm_trace_async`."""
-    return asyncio.run(confirm_trace_async(trace, result, model, agent=agent))
+    return asyncio.run(
+        confirm_trace_async(trace, result, model, agent=agent, read_window=read_window)
+    )

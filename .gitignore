@@ -27,3 +27,5 @@ venv/
 # OS
 .DS_Store
 Thumbs.db
+# Generated evaluation reports (regenerate via the scoring scripts)
+examples/**/reports/

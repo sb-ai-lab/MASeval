@@ -35,6 +35,9 @@ class LLMMetric(ABC):
         self.prompt_template = prompt_template
         self.result_type = result_type
         self.deps_type = deps_type
+        # Token usage from the most recent evaluate() run (pydantic_ai usage object,
+        # or None). Lets launchers meter per-metric input/output tokens.
+        self.last_usage = None
 
         # Create the pydantic AI agent with dependency injection
         self.agent = Agent(
@@ -92,6 +95,7 @@ class LLMMetric(ABC):
                 "Please evaluate the provided data according to the metric criteria.",
                 deps=eval_input,
             )
+            self._record_usage(result)
             return self._convert_result(result.output)
         except Exception as e:
             if "finish_reason" in str(e) and self.result_type:
@@ -99,9 +103,21 @@ class LLMMetric(ABC):
                 agent_text.system_prompt = self.agent._system_prompts[0]
 
                 response = await agent_text.run("... + Return JSON", deps=eval_input)
+                self._record_usage(response)
                 parsed = json.loads(response.output)
                 return self._convert_result(self.result_type(**parsed))
             raise
+
+    def _record_usage(self, run_result) -> None:
+        """Stash the run's token usage on ``self.last_usage`` (best-effort).
+
+        ``usage`` is a method on some pydantic_ai versions and a property on others.
+        """
+        try:
+            usage = getattr(run_result, "usage", None)
+            self.last_usage = usage() if callable(usage) else usage
+        except Exception:  # noqa: BLE001 - usage metering must never break evaluation
+            self.last_usage = None
 
     def _convert_result(self, result: FindingsResult) -> MetricResult:
         """Convert findings result to MetricResult.

@@ -13,6 +13,7 @@ import ast
 import asyncio
 import json
 import os
+import time
 from pathlib import Path
 
 import pandas as pd
@@ -38,7 +39,9 @@ from maseval.evaluation_blocks.final_answer_verification import (
 from maseval.metrics import EvidenceVerifier, MetricType, create_metric
 from maseval.models import RawTraceInput
 from maseval.reporting import build_evaluation_report
+from maseval.run_stats import aggregate_task_stats, extract_usage
 from maseval.validators import run_on_trace
+from maseval.validators.llm_confirm import confirm_trace_async
 
 # All active LLM evaluators (the regex-based mas_api_issues / mas_environment_setup_errors
 # were removed; non-LLM metrics are intentionally excluded).
@@ -64,8 +67,8 @@ def _coerce_history_to_steps(history) -> list:
         return history
     if isinstance(history, tuple):
         return list(history)
-    if hasattr(history, "tolist"):  # numpy ndarray / pandas array from read_parquet
-        return list(history.tolist())
+    # if hasattr(history, "tolist"):  # numpy ndarray / pandas array from read_parquet
+    #     return list(history.tolist())
     if isinstance(history, str):
         text = history.strip()
         for parser in (ast.literal_eval, json.loads):
@@ -110,14 +113,18 @@ def _format_trace_step(step) -> str:
     return str(step)
 
 
-def _format_indexed_raw_trace(history, question) -> str:
-    """Format raw traces with stable zero-based message indices.
+def _format_indexed_from_steps(steps, question) -> str:
+    """Format already-coerced steps with stable zero-based message indices.
 
     LLM evaluators can cite these indices in `evidence[i].idx` when no
     explicit state_id/response_id is available. EvidenceVerifier then maps
     `[0]`, `[1]`, ... blocks back to the quoted text.
+
+    Takes the coerced ``steps`` directly so the SAME step list feeds the judges,
+    the deterministic validators, and the confirmer -- they cannot disagree about
+    the trace's span space (which is what silently diverged when each path
+    re-coerced ``history`` separately).
     """
-    steps = _coerce_history_to_steps(history)
     lines = [
         "USER QUESTION:",
         str(question),
@@ -129,6 +136,11 @@ def _format_indexed_raw_trace(history, question) -> str:
     return "\n".join(lines)
 
 
+def _format_indexed_raw_trace(history, question) -> str:
+    """Backward-compatible wrapper: coerce ``history`` then format."""
+    return _format_indexed_from_steps(_coerce_history_to_steps(history), question)
+
+
 async def main(
     model_name: str,
     enable_tracing: bool,
@@ -136,6 +148,7 @@ async def main(
     result_file_name: str = "findings_",
     folder_name: str = "who&when_hand_findings",
     from_idx: int = 0,
+    llm_confirm: bool = False,
 ):
     """Run all LLM findings-evaluators on each row of the dataset.
 
@@ -146,6 +159,8 @@ async def main(
         result_file_name: Prefix for per-task JSON result files.
         folder_name: Subfolder (next to this script) where JSON files are written.
         from_idx: Skip rows before this index (resume support).
+        llm_confirm: If True, run the opt-in LLM confirmation + appointing layer
+            over the deterministic ``non_llm_validators`` findings.
     """
 
     api_key = os.getenv("OPENROUTER_API_KEY")
@@ -175,8 +190,14 @@ async def main(
             continue
 
         row = df.iloc[task]
+        # Coerce the trace ONCE, here, and thread the same `steps` object through
+        # the judges, the deterministic validators, and the confirmer. No
+        # tolist/to_pylist: in an environment where `history` already loads as a
+        # list of message dicts, this expands to the per-message spans; the point
+        # is that all three consumers share the identical span space.
+        steps = _coerce_history_to_steps(row["history"])
         eval_input = RawTraceInput(
-            trace=_format_indexed_raw_trace(row["history"], row["question"])
+            trace=_format_indexed_from_steps(steps, row["question"])
         )
         print(f"\n=== Evaluating Task {task} ===")
 
@@ -203,49 +224,81 @@ async def main(
                 judge_client,
                 model,
                 eval_input,
-                row["history"],
+                steps,
                 task,
                 trace_metadata,
                 ground_truth_value,
                 final_answer_verifier,
                 result_file_name,
                 folder_name,
+                llm_confirm,
             )
         else:
             await _evaluate_task(
                 model,
                 eval_input,
-                row["history"],
+                steps,
                 task,
                 trace_metadata,
                 ground_truth_value,
                 final_answer_verifier,
                 result_file_name,
                 folder_name,
+                llm_confirm,
             )
 
 
-async def _run_all_metrics(model, eval_input: RawTraceInput) -> dict:
-    """Run every LLM evaluator on one task and return {metric_name: MetricResult}."""
+# Retries per evaluator. OpenRouter returns finish_reason='error' when the
+# upstream (gemini) call fails transiently under load; those are retryable.
+METRIC_MAX_ATTEMPTS = int(os.environ.get("METRIC_MAX_ATTEMPTS", "4"))
+
+
+async def _run_all_metrics(model, eval_input: RawTraceInput) -> tuple[dict, dict]:
+    """Run every LLM evaluator on one task.
+
+    Returns ``(findings_results, metric_status)`` — the latter carries per-metric
+    timing + token usage for the ``task_stats`` rollup.
+    """
     findings_results: dict = {}
+    metric_status: dict = {}
     for metric_type in LLM_METRICS_TO_TEST:
-        print(f"\n--- Evaluating LLM metric: {metric_type.value} ---")
-        try:
-            metric = create_metric(metric_type, model)
-            result = await metric.evaluate(eval_input)
-            findings_results[metric_type.value] = result
-            print(
-                f"Metric: {result.metric_name} | findings: {len(result.findings)}"
-            )
-            for finding in result.findings:
+        name = metric_type.value
+        print(f"\n--- Evaluating LLM metric: {name} ---")
+        metric = None
+        t0 = time.perf_counter()
+        for attempt in range(1, METRIC_MAX_ATTEMPTS + 1):
+            try:
+                metric = create_metric(metric_type, model)
+                result = await metric.evaluate(eval_input)
+                inp, out, tot = extract_usage(getattr(metric, "last_usage", None))
+                findings_results[name] = result
+                metric_status[name] = {
+                    "status": "ok", "duration_s": round(time.perf_counter() - t0, 3),
+                    "input_tokens": inp, "output_tokens": out, "total_tokens": tot,
+                }
                 print(
-                    f"  - [{finding.severity_estimate.value}/{finding.confidence_estimate.value}] "
-                    f"{finding.problem_description[:120]}"
+                    f"Metric: {result.metric_name} | findings: {len(result.findings)} "
+                    f"| in={inp} out={out}"
                 )
-        except Exception as e:
-            print(f"Error evaluating {metric_type.value}: {e}")
-            continue
-    return findings_results
+                for finding in result.findings:
+                    print(
+                        f"  - [{finding.severity_estimate.value}/{finding.confidence_estimate.value}] "
+                        f"{finding.problem_description[:120]}"
+                    )
+                break
+            except Exception as e:
+                if attempt < METRIC_MAX_ATTEMPTS:
+                    await asyncio.sleep(2 * attempt)
+                    print(f"  retry {attempt}/{METRIC_MAX_ATTEMPTS - 1} after {type(e).__name__}")
+                else:
+                    inp, out, tot = extract_usage(getattr(metric, "last_usage", None))
+                    metric_status[name] = {
+                        "status": "failed", "detail": f"{type(e).__name__}: {e}"[:300],
+                        "duration_s": round(time.perf_counter() - t0, 3),
+                        "input_tokens": inp, "output_tokens": out, "total_tokens": tot,
+                    }
+                    print(f"Error evaluating {name}: {e}")
+    return findings_results, metric_status
 
 
 def _serialize_findings(findings_results: dict) -> dict:
@@ -329,24 +382,40 @@ def _save_results(
 async def _evaluate_task(
     model,
     eval_input: RawTraceInput,
-    history,
+    steps,
     task: int,
     trace_metadata: dict,
     ground_truth_value,
     final_answer_verifier: FinalAnswerVerifier,
     result_file_name: str,
     folder_name: str,
+    llm_confirm: bool = False,
 ):
-    """Run evaluators without Langfuse tracing."""
-    findings_results = await _run_all_metrics(model, eval_input)
+    """Run evaluators without Langfuse tracing.
+
+    ``steps`` is the trace already coerced by the caller; the validators and the
+    confirmer use the SAME object as the judges (no re-coercion) so their spans
+    are identical.
+    """
+    _t0 = time.perf_counter()
+    findings_results, metric_status = await _run_all_metrics(model, eval_input)
+    task_stats = aggregate_task_stats(metric_status, time.perf_counter() - _t0)
     evidence_results = EvidenceVerifier().verify_all(findings_results, eval_input)
     final_answer_result = await _run_final_answer_verification(
         final_answer_verifier,
-        history,
+        steps,
         trace_metadata["ground_truth"],
     )
     serializable_results = _serialize_findings(findings_results)
-    serializable_results["non_llm_validators"] = run_on_trace({"history": _coerce_history_to_steps(history)})
+    serializable_results["task_stats"] = task_stats
+    # Same span space as the judges: run_on_trace + the confirmer read `steps`.
+    trace = {"history": steps}
+    serializable_results["non_llm_validators"] = run_on_trace(trace)
+    if llm_confirm:
+        # Confirmer runs inline, as another judge: it reads the WHOLE trace
+        # (read_window=None) to settle confirmed-vs-benign, and appoints the
+        # causal turn within the tight default window.
+        await confirm_trace_async(trace, serializable_results["non_llm_validators"], model)
     serializable_results["evidence_verification"] = _serialize_evidence_verification(evidence_results)
     if final_answer_result is not None:
         serializable_results["final_answer_verification"] = final_answer_result.model_dump(mode="json")
@@ -364,15 +433,20 @@ async def _evaluate_task_traced(
     judge_client,
     model,
     eval_input: RawTraceInput,
-    history,
+    steps,
     task: int,
     trace_metadata: dict,
     ground_truth_value,
     final_answer_verifier: FinalAnswerVerifier,
     result_file_name: str,
     folder_name: str,
+    llm_confirm: bool = False,
 ):
-    """Run evaluators inside a Langfuse parent span; full findings go to span.output."""
+    """Run evaluators inside a Langfuse parent span; full findings go to span.output.
+
+    ``steps`` is the already-coerced trace shared with the judges (see
+    :func:`_evaluate_task`).
+    """
     with judge_client.start_as_current_span(
         name=f"evaluate_task_{task}",
         input={"task_id": task, "trace_id": trace_metadata["task_id"]},
@@ -382,15 +456,22 @@ async def _evaluate_task_traced(
             tags=["maseval", "findings", f"task_id:{task}"]
         )
 
-        findings_results = await _run_all_metrics(model, eval_input)
+        _t0 = time.perf_counter()
+        findings_results, metric_status = await _run_all_metrics(model, eval_input)
+        task_stats = aggregate_task_stats(metric_status, time.perf_counter() - _t0)
         evidence_results = EvidenceVerifier().verify_all(findings_results, eval_input)
         final_answer_result = await _run_final_answer_verification(
             final_answer_verifier,
-            history,
+            steps,
             trace_metadata["ground_truth"],
         )
         serializable_results = _serialize_findings(findings_results)
-        serializable_results["non_llm_validators"] = run_on_trace({"history": _coerce_history_to_steps(history)})
+        serializable_results["task_stats"] = task_stats
+        # Same span space as the judges (see _evaluate_task).
+        trace = {"history": steps}
+        serializable_results["non_llm_validators"] = run_on_trace(trace)
+        if llm_confirm:
+            await confirm_trace_async(trace, serializable_results["non_llm_validators"], model)
         serializable_results["evidence_verification"] = _serialize_evidence_verification(evidence_results)
         if final_answer_result is not None:
             serializable_results["final_answer_verification"] = final_answer_result.model_dump(mode="json")
@@ -423,12 +504,24 @@ async def _evaluate_task_traced(
 if __name__ == "__main__":
     import argparse
 
-    df_hc = pd.read_parquet(
-        "hf://datasets/Kevin355/Who_and_When/Hand-Crafted.parquet"
-    )
-    df_algo = pd.read_parquet(
-        "hf://datasets/Kevin355/Who_and_When/Algorithm-Generated.parquet"
-    )
+    def _load_split(filename: str):
+        """Robustly load a Who&When split via cached hf_hub_download (the flaky
+        hf:// streaming path times out on this network)."""
+        from huggingface_hub import hf_hub_download
+
+        last = None
+        for _ in range(5):
+            try:
+                path = hf_hub_download(
+                    "Kevin355/Who_and_When", filename=filename, repo_type="dataset"
+                )
+                return pd.read_parquet(path)
+            except Exception as exc:  # noqa: BLE001 - transient network
+                last = exc
+        raise RuntimeError(f"Could not download {filename}: {last}")
+
+    df_hc = _load_split("Hand-Crafted.parquet")
+    df_algo = _load_split("Algorithm-Generated.parquet")
 
     # Resume support: read FROM_IDX from env (default 0). Useful when the
     # script is interrupted and you want to continue from a specific task.
@@ -444,26 +537,45 @@ if __name__ == "__main__":
         default="both",
         help="Which dataset(s) to evaluate.",
     )
+    parser.add_argument(
+        "--llm-confirm",
+        action="store_true",
+        help="Run the opt-in LLM confirmation + appointing layer over the "
+        "deterministic non_llm_validators findings.",
+    )
+    parser.add_argument(
+        "--folder",
+        default=None,
+        help="Override the output folder name (applied to the selected split).",
+    )
+    parser.add_argument(
+        "--no-trace",
+        action="store_true",
+        help="Disable Langfuse tracing (use when LANGFUSE_* env vars are unset). "
+        "Findings output is identical either way.",
+    )
     args = parser.parse_args()
 
     async def _run_selected(selected_run: str):
         if selected_run in ("algo", "both"):
             await main(
                 model_name="google/gemini-2.5-flash",
-                enable_tracing=True,
+                enable_tracing=not args.no_trace,
                 df=df_algo,
                 result_file_name="gemini_findings_",
-                folder_name="who&when_algo_gemini_idx_msg_v2",
+                folder_name=args.folder or "who&when_algo_gemini_idx_msg_v2",
                 from_idx=from_idx,
+                llm_confirm=args.llm_confirm,
             )
         if selected_run in ("hc", "both"):
             await main(
                 model_name="google/gemini-2.5-flash",
-                enable_tracing=True,
+                enable_tracing=not args.no_trace,
                 df=df_hc,
                 result_file_name="gemini_findings_",
-                folder_name="who&when_hand_gemini_idx_msg_v2",
+                folder_name=args.folder or "who&when_hand_gemini_idx_msg_v2",
                 from_idx=from_idx,
+                llm_confirm=args.llm_confirm,
             )
 
     asyncio.run(_run_selected(args.run))

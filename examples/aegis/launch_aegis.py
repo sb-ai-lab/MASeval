@@ -24,6 +24,7 @@ import argparse
 import asyncio
 import json
 import os
+import time
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -43,6 +44,7 @@ from maseval.evaluation_blocks.final_answer_verification import FinalAnswerVerif
 from maseval.metrics import EvidenceVerifier, MetricType, create_metric
 from maseval.models import RawTraceInput
 from maseval.reporting import build_evaluation_report
+from maseval.run_stats import aggregate_task_stats, extract_usage
 from maseval.validators import run_on_trace
 
 LLM_METRICS_TO_TEST = [
@@ -110,21 +112,40 @@ def _format_indexed_raw_trace(steps: list, query: str) -> str:
     return "\n".join(lines)
 
 
-async def _run_all_metrics(model, eval_input: RawTraceInput) -> dict:
+async def _run_all_metrics(model, eval_input: RawTraceInput) -> tuple[dict, dict]:
     """Run all LLM evaluators for one trace sequentially (mirrors the WW launcher;
-    avoids bursting OpenRouter rate limits with concurrent calls)."""
+    avoids bursting OpenRouter rate limits with concurrent calls).
+
+    Returns ``(findings_results, metric_status)`` — the latter carries per-metric
+    timing + token usage for the ``task_stats`` rollup.
+    """
     findings_results: dict = {}
+    metric_status: dict = {}
     for metric_type in LLM_METRICS_TO_TEST:
-        print(f"  -- LLM metric: {metric_type.value}")
+        name = metric_type.value
+        print(f"  -- LLM metric: {name}")
+        metric = None
+        t0 = time.perf_counter()
         try:
             metric = create_metric(metric_type, model)
             result = await metric.evaluate(eval_input)
-            findings_results[metric_type.value] = result
-            print(f"     findings: {len(result.findings)}")
+            inp, out, tot = extract_usage(getattr(metric, "last_usage", None))
+            findings_results[name] = result
+            metric_status[name] = {
+                "status": "ok", "duration_s": round(time.perf_counter() - t0, 3),
+                "input_tokens": inp, "output_tokens": out, "total_tokens": tot,
+            }
+            print(f"     findings: {len(result.findings)} | in={inp} out={out}")
         except Exception as e:  # noqa: BLE001 - isolate a single metric failure
-            print(f"     [skip] {metric_type.value}: {e}")
+            inp, out, tot = extract_usage(getattr(metric, "last_usage", None))
+            metric_status[name] = {
+                "status": "failed", "detail": f"{type(e).__name__}: {e}"[:300],
+                "duration_s": round(time.perf_counter() - t0, 3),
+                "input_tokens": inp, "output_tokens": out, "total_tokens": tot,
+            }
+            print(f"     [skip] {name}: {e}")
             continue
-    return findings_results
+    return findings_results, metric_status
 
 
 def _serialize_findings(findings_results: dict) -> dict:
@@ -174,7 +195,9 @@ async def main(input_path: str, out_dir: str, model_name: str, from_idx: int, li
 
         eval_input = RawTraceInput(trace=_format_indexed_raw_trace(steps, query))
 
-        findings_results = await _run_all_metrics(model, eval_input)
+        _t0 = time.perf_counter()
+        findings_results, metric_status = await _run_all_metrics(model, eval_input)
+        task_stats = aggregate_task_stats(metric_status, time.perf_counter() - _t0)
         evidence_results = EvidenceVerifier().verify_all(findings_results, eval_input)
 
         gt_answer = (rec.get("ground_truth") or {}).get("correct_answer")
@@ -189,6 +212,7 @@ async def main(input_path: str, out_dir: str, model_name: str, from_idx: int, li
         # can consume the file identically to the WW pipeline.
         payload: dict = {}
         payload.update(_serialize_findings(findings_results))
+        payload["task_stats"] = task_stats
         payload["evidence_verification"] = _serialize_evidence(evidence_results)
         payload["non_llm_validators"] = run_on_trace(rec.get("input") or rec)
         payload["reference_answer"] = gt_answer

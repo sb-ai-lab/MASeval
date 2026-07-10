@@ -8,7 +8,7 @@ dependencies = [
     "pydantic>=2.11.9",
     "pydantic-ai>=2.0.0",
     "python-dotenv>=1.1.1",
-    "langfuse>=3.6.1",
+    "langfuse==3.14.4",
     "deepeval>=3.6.7",
     "ftfy>=6.3.1",
     "langchain_core>=0.3.76",
