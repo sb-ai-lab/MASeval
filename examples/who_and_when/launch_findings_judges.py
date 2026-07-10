@@ -13,6 +13,7 @@ import ast
 import asyncio
 import json
 import os
+import time
 from pathlib import Path
 
 import pandas as pd
@@ -38,6 +39,7 @@ from maseval.evaluation_blocks.final_answer_verification import (
 from maseval.metrics import EvidenceVerifier, MetricType, create_metric
 from maseval.models import RawTraceInput
 from maseval.reporting import build_evaluation_report
+from maseval.run_stats import aggregate_task_stats, extract_usage
 from maseval.validators import run_on_trace
 from maseval.validators.llm_confirm import confirm_trace_async
 
@@ -251,18 +253,32 @@ async def main(
 METRIC_MAX_ATTEMPTS = int(os.environ.get("METRIC_MAX_ATTEMPTS", "4"))
 
 
-async def _run_all_metrics(model, eval_input: RawTraceInput) -> dict:
-    """Run every LLM evaluator on one task and return {metric_name: MetricResult}."""
+async def _run_all_metrics(model, eval_input: RawTraceInput) -> tuple[dict, dict]:
+    """Run every LLM evaluator on one task.
+
+    Returns ``(findings_results, metric_status)`` — the latter carries per-metric
+    timing + token usage for the ``task_stats`` rollup.
+    """
     findings_results: dict = {}
+    metric_status: dict = {}
     for metric_type in LLM_METRICS_TO_TEST:
-        print(f"\n--- Evaluating LLM metric: {metric_type.value} ---")
+        name = metric_type.value
+        print(f"\n--- Evaluating LLM metric: {name} ---")
+        metric = None
+        t0 = time.perf_counter()
         for attempt in range(1, METRIC_MAX_ATTEMPTS + 1):
             try:
                 metric = create_metric(metric_type, model)
                 result = await metric.evaluate(eval_input)
-                findings_results[metric_type.value] = result
+                inp, out, tot = extract_usage(getattr(metric, "last_usage", None))
+                findings_results[name] = result
+                metric_status[name] = {
+                    "status": "ok", "duration_s": round(time.perf_counter() - t0, 3),
+                    "input_tokens": inp, "output_tokens": out, "total_tokens": tot,
+                }
                 print(
-                    f"Metric: {result.metric_name} | findings: {len(result.findings)}"
+                    f"Metric: {result.metric_name} | findings: {len(result.findings)} "
+                    f"| in={inp} out={out}"
                 )
                 for finding in result.findings:
                     print(
@@ -275,8 +291,14 @@ async def _run_all_metrics(model, eval_input: RawTraceInput) -> dict:
                     await asyncio.sleep(2 * attempt)
                     print(f"  retry {attempt}/{METRIC_MAX_ATTEMPTS - 1} after {type(e).__name__}")
                 else:
-                    print(f"Error evaluating {metric_type.value}: {e}")
-    return findings_results
+                    inp, out, tot = extract_usage(getattr(metric, "last_usage", None))
+                    metric_status[name] = {
+                        "status": "failed", "detail": f"{type(e).__name__}: {e}"[:300],
+                        "duration_s": round(time.perf_counter() - t0, 3),
+                        "input_tokens": inp, "output_tokens": out, "total_tokens": tot,
+                    }
+                    print(f"Error evaluating {name}: {e}")
+    return findings_results, metric_status
 
 
 def _serialize_findings(findings_results: dict) -> dict:
@@ -375,7 +397,9 @@ async def _evaluate_task(
     confirmer use the SAME object as the judges (no re-coercion) so their spans
     are identical.
     """
-    findings_results = await _run_all_metrics(model, eval_input)
+    _t0 = time.perf_counter()
+    findings_results, metric_status = await _run_all_metrics(model, eval_input)
+    task_stats = aggregate_task_stats(metric_status, time.perf_counter() - _t0)
     evidence_results = EvidenceVerifier().verify_all(findings_results, eval_input)
     final_answer_result = await _run_final_answer_verification(
         final_answer_verifier,
@@ -383,6 +407,7 @@ async def _evaluate_task(
         trace_metadata["ground_truth"],
     )
     serializable_results = _serialize_findings(findings_results)
+    serializable_results["task_stats"] = task_stats
     # Same span space as the judges: run_on_trace + the confirmer read `steps`.
     trace = {"history": steps}
     serializable_results["non_llm_validators"] = run_on_trace(trace)
@@ -431,7 +456,9 @@ async def _evaluate_task_traced(
             tags=["maseval", "findings", f"task_id:{task}"]
         )
 
-        findings_results = await _run_all_metrics(model, eval_input)
+        _t0 = time.perf_counter()
+        findings_results, metric_status = await _run_all_metrics(model, eval_input)
+        task_stats = aggregate_task_stats(metric_status, time.perf_counter() - _t0)
         evidence_results = EvidenceVerifier().verify_all(findings_results, eval_input)
         final_answer_result = await _run_final_answer_verification(
             final_answer_verifier,
@@ -439,6 +466,7 @@ async def _evaluate_task_traced(
             trace_metadata["ground_truth"],
         )
         serializable_results = _serialize_findings(findings_results)
+        serializable_results["task_stats"] = task_stats
         # Same span space as the judges (see _evaluate_task).
         trace = {"history": steps}
         serializable_results["non_llm_validators"] = run_on_trace(trace)

@@ -23,6 +23,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -50,6 +51,7 @@ from maseval.evaluation_blocks.final_answer_verification import (  # noqa: E402
 from maseval.metrics import EvidenceVerifier, MetricType, create_metric  # noqa: E402
 from maseval.models import RawTraceInput  # noqa: E402
 from maseval.reporting import build_evaluation_report  # noqa: E402
+from maseval.run_stats import aggregate_task_stats, extract_usage  # noqa: E402
 
 import trace_elephant_data as ted  # noqa: E402
 
@@ -79,27 +81,46 @@ METRIC_MAX_ATTEMPTS = int(os.environ.get("METRIC_MAX_ATTEMPTS", "4"))
 SYSTEMS = ("captain", "magentic", "swe")
 
 
-async def _run_all_metrics(model, eval_input: RawTraceInput) -> dict:
-    """Run every LLM evaluator on one trace; return {metric_name: result}."""
+async def _run_all_metrics(model, eval_input: RawTraceInput) -> tuple[dict, dict]:
+    """Run every LLM evaluator on one trace.
+
+    Returns ``(findings_results, metric_status)`` where ``metric_status`` records
+    per-metric timing + token usage for the ``task_stats`` rollup.
+    """
     findings_results: dict = {}
+    metric_status: dict = {}
     for metric_type in LLM_METRICS_TO_TEST:
-        print(f"  --- {metric_type.value} ---")
+        name = metric_type.value
+        print(f"  --- {name} ---")
+        metric = None
+        t0 = time.perf_counter()
         for attempt in range(1, METRIC_MAX_ATTEMPTS + 1):
             try:
                 metric = create_metric(metric_type, model)
                 result = await asyncio.wait_for(
                     metric.evaluate(eval_input), timeout=METRIC_TIMEOUT
                 )
-                findings_results[metric_type.value] = result
-                print(f"      findings: {len(result.findings)}")
+                inp, out, tot = extract_usage(getattr(metric, "last_usage", None))
+                findings_results[name] = result
+                metric_status[name] = {
+                    "status": "ok", "duration_s": round(time.perf_counter() - t0, 3),
+                    "input_tokens": inp, "output_tokens": out, "total_tokens": tot,
+                }
+                print(f"      findings: {len(result.findings)} | in={inp} out={out}")
                 break
             except Exception as exc:  # noqa: BLE001 - isolate one metric's failure
                 if attempt < METRIC_MAX_ATTEMPTS:
                     await asyncio.sleep(2 * attempt)
                     print(f"      retry {attempt}/{METRIC_MAX_ATTEMPTS - 1} after {type(exc).__name__}")
                 else:
+                    inp, out, tot = extract_usage(getattr(metric, "last_usage", None))
+                    metric_status[name] = {
+                        "status": "failed", "detail": f"{type(exc).__name__}: {exc}"[:300],
+                        "duration_s": round(time.perf_counter() - t0, 3),
+                        "input_tokens": inp, "output_tokens": out, "total_tokens": tot,
+                    }
                     print(f"      error: {type(exc).__name__}: {exc}")
-    return findings_results
+    return findings_results, metric_status
 
 
 def _serialize_findings(findings_results: dict) -> dict:
@@ -154,11 +175,14 @@ async def _evaluate_example(
 ) -> None:
     """Evaluate one TraceElephant trace and write its per-trace JSON."""
     eval_input = RawTraceInput(trace=ted.format_trace(ex))
-    findings_results = await _run_all_metrics(model, eval_input)
+    _t0 = time.perf_counter()
+    findings_results, metric_status = await _run_all_metrics(model, eval_input)
+    task_stats = aggregate_task_stats(metric_status, time.perf_counter() - _t0)
     evidence_results = EvidenceVerifier().verify_all(findings_results, eval_input)
     final_answer_result = await _run_final_answer_verification(final_answer_verifier, ex)
 
     payload = _serialize_findings(findings_results)
+    payload["task_stats"] = task_stats
     # Top-level id so the scorer can match by task_name as well as by filename index.
     payload["task_name"] = ex.task_name
     payload["evidence_verification"] = _serialize_evidence_verification(evidence_results)
