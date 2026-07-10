@@ -31,7 +31,7 @@ for p in (ROOT / "src", THIS_DIR):
 
 from build_agent_step_accuracy_report import main as build_report  # noqa: E402
 
-MODES = ("none", "strict", "soft")
+MODES = ("none", "strict", "soft", "llm")
 
 METRIC_KEYS = [
     ("agent_top1_acc", "Agent Top-1"),
@@ -100,6 +100,27 @@ def _render(split: str, annotations: str, summaries: dict[str, dict]) -> str:
 
 
 if __name__ == "__main__":
+    """Score the same prediction files under every EvidenceVerifier gate.
+
+    Modes: none / strict / soft / llm. ``non_llm_validators`` are NOT counted.
+
+    Example 1 -- deterministic evidence (the standard launch output):
+        python verifier_ablation.py --split hc
+
+    Example 2 -- LLM-judged evidence. First rebuild the verifier output of an
+    existing folder with the LLM verifier (no judges re-run), then score it:
+        python reverify_with_llm.py \
+            --input-folder "who&when_hand_gemini_idx_msg_v2" \
+            --split hc --model "google/gemini-2.5-flash"
+        python verifier_ablation.py \
+            --split hc \
+            --pred-glob "who&when_hand_gemini_idx_msg_v2_llm/*.json"
+
+    Comparing Example 1 vs Example 2 shows the effect of swapping the
+    deterministic verifier for the LLM verifier (the ``llm`` column in each
+    report matches ``soft`` gating, but the underlying ``evidence_status``
+    values were produced by the LLM judge).
+    """
     import argparse
 
     def _cached(name: str) -> str:
@@ -134,7 +155,7 @@ if __name__ == "__main__":
 
     V2 = str(THIS_DIR)
     SPECS = {
-        "hc": (f"{V2}/who&when_hand_gemini_idx_msg_v2/*.json",
+        "hc": (f"{V2}/who&when_hand_gemini_idx_msg_v4/*.json",
                _cached("Hand-Crafted.parquet"), "Who&When / Hand-Crafted"),
         "algo": (f"{V2}/who&when_algo_gemini_idx_msg_v2/*.json",
                  _cached("Algorithm-Generated.parquet"), "Who&When / Algorithm-Generated"),

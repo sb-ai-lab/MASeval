@@ -10,6 +10,16 @@ It only checks whether the finding is grounded in the provided trace:
 
 The output is intentionally close to the schema used in the MASQUE Studio design:
 ``verified | weak | invalid`` + check-level diagnostics.
+
+LLM mode
+--------
+When ``mode="llm"``, the verifier does not apply the deterministic grounding
+rules. Instead it sends every finding of one metric (together with the trace
+excerpts its cited evidence resolves to) to an LLM judge in a single batched
+call. The judge returns one grounding verdict per finding. The batched call
+keeps the cost comparable to a single evaluator run rather than one call per
+finding. If the LLM call fails, the metric falls back to the deterministic
+logic so the pipeline never breaks.
 """
 
 from __future__ import annotations
@@ -17,7 +27,11 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any, Literal, Mapping
+
+from pydantic import BaseModel
+from pydantic_ai import Agent
+from pydantic_ai.models.openai import OpenAIChatModel
 
 from ..models import (
     Confidence,
@@ -32,6 +46,53 @@ from ..models import (
     MetricResult,
     RawTraceInput,
 )
+
+
+class EvidenceLLMVerdict(BaseModel):
+    """LLM grounding verdict for a single finding (batched LLM verifier)."""
+
+    finding_index: int
+    status: Literal["verified", "weak", "invalid"]
+    explanation: str
+    grounded_evidence_indices: list[int] = []
+
+
+class EvidenceLLMBatchVerdict(BaseModel):
+    """Batched LLM verdict: one per finding of a metric."""
+
+    verdicts: list[EvidenceLLMVerdict]
+
+
+EVIDENCE_VERIFIER_LLM_PROMPT = """\
+You are a strict, deterministic-style evidence verifier for findings produced by \
+other LLM evaluators of a multi-agent system (MAS) trace. Your ONLY job is to judge \
+whether each finding is actually grounded in the cited trace excerpts. You do NOT \
+decide whether the finding is semantically correct or important; only whether the \
+cited evidence supports the claim.
+
+For each finding you are given:
+- the finding's problem description and the evaluator's claim,
+- the cited evidence items, each with its `idx`, `role`, the evaluator's `claim`,
+  the exact `quote`, and the `resolved_trace_excerpt` (the actual trace text the
+  idx resolved to, or `UNRESOLVED` if the verifier could not locate it).
+
+Return one verdict per finding. For each finding set:
+- `status`:
+  - "verified"  if the cited quotes/claims are clearly present in the resolved
+    trace excerpts and the finding is well grounded;
+  - "weak"      if at least some cited evidence is grounded but other citations are
+    missing, vague, or only partially supported (the finding is still usable);
+  - "invalid"   if none of the cited quotes can be found in the resolved excerpts,
+    the idx is unresolved, or the finding has no usable evidence.
+- `explanation`: one concise sentence explaining the verdict, citing which evidence
+  was or was not found.
+- `grounded_evidence_indices`: the `evidence_index` values (0-based within the
+  finding's evidence list) whose quote/claim is actually present in its resolved
+  trace excerpt. If you mark the finding "verified", this should usually include all
+  of them. If "invalid", this is usually empty.
+
+Be conservative: when in doubt about grounding, prefer "weak" over "verified", and
+"invalid" only for gross grounding failures. Output STRICTLY the requested JSON."""
 
 
 @dataclass(frozen=True)
@@ -62,7 +123,15 @@ class EvidenceVerifier:
         allow_agent_name_as_idx: If True, agent names are accepted as
             citeable ids. Defaults to False because MASQUE Studio should prefer
             concrete step/message indices or state/response ids over agent-level references.
+        mode: Verification strategy. ``"deterministic"`` (default) applies the
+            rule-based grounding checks; ``"llm"`` sends every finding of a metric
+            to an LLM judge (batched per metric) and uses its verdicts. ``"llm"``
+            requires ``model`` to be provided.
+        model: An OpenAI-compatible chat model (``OpenAIChatModel`` or a model id
+            string) used only when ``mode="llm"``.
     """
+
+    MODES = ("deterministic", "llm")
 
     DEFAULT_ALLOWED_ROLES = {
         "root_cause",
@@ -102,9 +171,25 @@ class EvidenceVerifier:
         self,
         allowed_roles: set[str] | None = None,
         allow_agent_name_as_idx: bool = False,
+        mode: str = "deterministic",
+        model: OpenAIChatModel | str | None = None,
     ):
+        if mode not in self.MODES:
+            raise ValueError(f"Unknown EvidenceVerifier mode: {mode!r}; expected one of {self.MODES}")
         self.allowed_roles = {r.lower() for r in (allowed_roles or self.DEFAULT_ALLOWED_ROLES)}
         self.allow_agent_name_as_idx = allow_agent_name_as_idx
+        self.mode = mode
+        self.model = model
+        self._llm_agent: Agent | None = None
+        if self.mode == "llm":
+            if self.model is None:
+                raise ValueError("EvidenceVerifier(mode='llm') requires a `model`.")
+            self._llm_agent = Agent(
+                model=self.model,
+                output_type=EvidenceLLMBatchVerdict,
+                system_prompt=EVIDENCE_VERIFIER_LLM_PROMPT,
+                retries=2,
+            )
 
     def verify_metric_result(
         self,
@@ -145,6 +230,243 @@ class EvidenceVerifier:
                 continue
             verified[metric_name] = self.verify_metric_result(result, eval_input)
         return verified
+
+    async def verify_all_async(
+        self,
+        metric_results: Mapping[str, MetricResult | Mapping[str, Any]],
+        eval_input: EvaluationInput | RawTraceInput,
+    ) -> dict[str, EvidenceVerificationMetricResult]:
+        """Async variant of :meth:`verify_all`.
+
+        In ``"llm"`` mode each metric is verified in a single batched LLM call;
+        otherwise this is equivalent to :meth:`verify_all`.
+        """
+
+        verified: dict[str, EvidenceVerificationMetricResult] = {}
+        for metric_name, result in metric_results.items():
+            if not self._looks_like_metric_result(result):
+                continue
+            if self.mode == "llm":
+                verified[metric_name] = await self.verify_metric_result_async(result, eval_input)
+            else:
+                verified[metric_name] = self.verify_metric_result(result, eval_input)
+        return verified
+
+    async def verify_metric_result_async(
+        self,
+        metric_result: MetricResult | Mapping[str, Any],
+        eval_input: EvaluationInput | RawTraceInput,
+    ) -> EvidenceVerificationMetricResult:
+        """Async variant of :meth:`verify_metric_result` (LLM mode only)."""
+
+        if self.mode != "llm":
+            return self.verify_metric_result(metric_result, eval_input)
+
+        metric_result = self._coerce_metric_result(metric_result)
+        idx_index = self._build_idx_index(eval_input)
+        raw_trace_text = self._raw_trace_text(eval_input)
+        return await self._verify_metric_llm(
+            metric_result=metric_result,
+            idx_index=idx_index,
+            raw_trace_text=raw_trace_text,
+        )
+
+    async def _verify_metric_llm(
+        self,
+        metric_result: MetricResult,
+        idx_index: Mapping[str, _IdxRecord],
+        raw_trace_text: str | None,
+    ) -> EvidenceVerificationMetricResult:
+        """Verify all findings of one metric with a single batched LLM call.
+
+        Falls back to the deterministic verifier for the whole metric if the LLM
+        call fails or the judge does not return one verdict per finding.
+        """
+
+        assert self._llm_agent is not None
+        findings = list(metric_result.findings)
+
+        if not findings:
+            return EvidenceVerificationMetricResult(
+                metric_name=metric_result.metric_name, verifications=[]
+            )
+
+        payload = self._build_llm_finding_payload(findings, idx_index, raw_trace_text)
+        prompt = (
+            "Verify the grounding of the following findings from metric "
+            f"'{metric_result.metric_name}'. Return exactly one verdict per finding, "
+            "using the finding_index values given.\n\n"
+            + json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+        )
+
+        try:
+            response = await self._llm_agent.run(prompt)
+            verdicts = {v.finding_index: v for v in response.output.verdicts}
+            if set(verdicts) != set(range(len(findings))):
+                raise ValueError(
+                    f"LLM returned verdicts for {sorted(verdicts)} but expected "
+                    f"{list(range(len(findings)))}"
+                )
+        except Exception as exc:  # pragma: no cover - network/model dependent
+            print(
+                f"[EvidenceVerifier:llm] fell back to deterministic for "
+                f"'{metric_result.metric_name}': {exc}"
+            )
+            deterministic = self._verify_metric_result_deterministic(
+                metric_result, idx_index, raw_trace_text
+            )
+            return EvidenceVerificationMetricResult(
+                metric_name=metric_result.metric_name,
+                verifications=[
+                    self._mark_deterministic_fallback(v) for v in deterministic.verifications
+                ],
+            )
+
+        verifications = [
+            self._verification_from_llm_verdict(
+                metric_name=metric_result.metric_name,
+                finding=finding,
+                finding_index=i,
+                verdict=verdicts[i],
+            )
+            for i, finding in enumerate(findings)
+        ]
+        return EvidenceVerificationMetricResult(
+            metric_name=metric_result.metric_name, verifications=verifications
+        )
+
+    def _verify_metric_result_deterministic(
+        self,
+        metric_result: MetricResult,
+        idx_index: Mapping[str, _IdxRecord],
+        raw_trace_text: str | None,
+    ) -> EvidenceVerificationMetricResult:
+        """Synchronous deterministic verification (shared by fallback path)."""
+
+        verifications = [
+            self.verify_finding(
+                metric_name=metric_result.metric_name,
+                finding=finding,
+                finding_index=i,
+                idx_index=idx_index,
+                raw_trace_text=raw_trace_text,
+            )
+            for i, finding in enumerate(metric_result.findings)
+        ]
+        return EvidenceVerificationMetricResult(
+            metric_name=metric_result.metric_name, verifications=verifications
+        )
+
+    @staticmethod
+    def _mark_deterministic_fallback(
+        verification: EvidenceVerificationResult,
+    ) -> EvidenceVerificationResult:
+        return verification.model_copy(
+            update={
+                "verifier_method": "deterministic_fallback",
+                "verifier_explanation": (
+                    f"(LLM verifier unavailable; deterministic fallback) "
+                    f"{verification.verifier_explanation}"
+                ),
+            }
+        )
+
+    def _build_llm_finding_payload(
+        self,
+        findings: list[Finding],
+        idx_index: Mapping[str, _IdxRecord],
+        raw_trace_text: str | None,
+    ) -> list[dict[str, Any]]:
+        """Serialize findings + resolved trace excerpts for the LLM judge."""
+
+        payload: list[dict[str, Any]] = []
+        for finding_index, finding in enumerate(findings):
+            resolutions = self._resolve_evidence_items(
+                finding=finding, idx_index=idx_index, raw_trace_text=raw_trace_text
+            )
+            evidence_items = []
+            for item in resolutions:
+                excerpt = item.record.content if item.record is not None else None
+                evidence_items.append(
+                    {
+                        "evidence_index": item.check.evidence_index,
+                        "idx": item.check.idx,
+                        "resolved_idx": item.check.resolved_idx,
+                        "role": (finding.evidence[item.check.evidence_index].role
+                                 if item.check.evidence_index < len(finding.evidence) else None),
+                        "claim": (finding.evidence[item.check.evidence_index].claim
+                                  if item.check.evidence_index < len(finding.evidence) else None),
+                        "quote": (finding.evidence[item.check.evidence_index].quote
+                                  if item.check.evidence_index < len(finding.evidence) else None),
+                        "resolved_trace_excerpt": excerpt if excerpt is not None else "UNRESOLVED",
+                    }
+                )
+            payload.append(
+                {
+                    "finding_index": finding_index,
+                    "severity_estimate": finding.severity_estimate.value,
+                    "confidence_estimate": finding.confidence_estimate.value,
+                    "problem_description": finding.problem_description,
+                    "culprit_agent_candidates": [
+                        c.agent for c in finding.culprit_agent_candidates
+                    ],
+                    "evidence": evidence_items,
+                }
+            )
+        return payload
+
+    def _verification_from_llm_verdict(
+        self,
+        metric_name: str,
+        finding: Finding,
+        finding_index: int,
+        verdict: EvidenceLLMVerdict,
+    ) -> EvidenceVerificationResult:
+        """Map an LLM verdict into the standard EvidenceVerificationResult schema."""
+
+        grounded = set(verdict.grounded_evidence_indices or [])
+        if not finding.evidence:
+            grounded = set()
+
+        evidence_item_checks: list[EvidenceItemCheck] = []
+        for evidence_index, evidence in enumerate(finding.evidence):
+            is_grounded = evidence_index in grounded
+            if not grounded and verdict.status in ("verified", "weak"):
+                # LLM did not enumerate grounded indices but approved the finding:
+                # treat all cited evidence as grounded.
+                is_grounded = True
+            evidence_item_checks.append(
+                EvidenceItemCheck(
+                    evidence_index=evidence_index,
+                    idx=str(evidence.idx),
+                    idx_exists=is_grounded,
+                    quote_found=is_grounded,
+                    role_plausible=True,
+                    resolution_strategy="llm_verifier",
+                    problem=None if is_grounded else "quote/claim not grounded per LLM verifier",
+                )
+            )
+
+        checks = EvidenceChecks(
+            all_idxs_exist=all(c.idx_exists for c in evidence_item_checks) if evidence_item_checks else False,
+            quotes_found_in_idxs=all(c.quote_found for c in evidence_item_checks) if evidence_item_checks else False,
+            culprit_agent_matches_evidence=True,
+            idx_roles_are_plausible=True,
+        )
+        evidence_status = EvidenceStatus(verdict.status)
+        usable_for_diagnosis = evidence_status != EvidenceStatus.INVALID
+        explanation = f"(LLM verifier) {verdict.explanation}"
+
+        return EvidenceVerificationResult(
+            metric_name=metric_name,
+            finding_index=finding_index,
+            evidence_status=evidence_status,
+            evidence_checks=checks,
+            evidence_item_checks=evidence_item_checks,
+            usable_for_diagnosis=usable_for_diagnosis,
+            verifier_explanation=explanation,
+            verifier_method="llm",
+        )
 
     def verify_finding(
         self,

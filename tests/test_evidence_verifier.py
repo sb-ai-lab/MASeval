@@ -1,4 +1,5 @@
 from maseval.metrics import EvidenceVerifier
+from maseval.metrics.evidence_verifier import EvidenceLLMBatchVerdict, EvidenceLLMVerdict
 from maseval.models import (
     AgentState,
     Confidence,
@@ -10,6 +11,8 @@ from maseval.models import (
     Severity,
     StateType,
 )
+
+import pytest
 
 
 def test_evidence_verifier_marks_verified_finding():
@@ -142,3 +145,75 @@ def test_evidence_verifier_accepts_culprit_role_and_any_matching_candidate():
         verified.verifications[0].evidence_checks.culprit_agent_matches_evidence is True
     )
     assert verified.verifications[0].evidence_checks.idx_roles_are_plausible is True
+
+
+@pytest.mark.asyncio
+async def test_evidence_verifier_llm_mode_uses_judge_verdicts(monkeypatch):
+    """In mode='llm' the verifier batches findings and trusts the LLM verdicts."""
+
+    class _FakeOutput:
+        verdicts = [
+            EvidenceLLMVerdict(
+                finding_index=0,
+                status="weak",
+                explanation="quote partially grounded",
+                grounded_evidence_indices=[0],
+            ),
+            EvidenceLLMVerdict(
+                finding_index=1,
+                status="invalid",
+                explanation="no quote found in trace",
+                grounded_evidence_indices=[],
+            ),
+        ]
+
+    class _FakeResponse:
+        output = _FakeOutput()
+
+    class _FakeAgent:
+        async def run(self, prompt):
+            return _FakeResponse()
+
+    eval_input = EvaluationInput(
+        agent_states=[
+            AgentState(
+                state_id="WebSurfer_1",
+                type=StateType.ASSISTANT,
+                content="FINAL ANSWER: 31",
+            )
+        ]
+    )
+    result = MetricResult(
+        metric_name="task_transfer",
+        findings=[
+            Finding(
+                severity_estimate=Severity.CRITICAL,
+                confidence_estimate=Confidence.HIGH,
+                evidence=[
+                    Evidence(idx="WebSurfer_1", role="root_cause", claim="c", quote="FINAL ANSWER: 31"),
+                ],
+                problem_description="p1",
+            ),
+            Finding(
+                severity_estimate=Severity.MAJOR,
+                confidence_estimate=Confidence.MEDIUM,
+                evidence=[
+                    Evidence(idx="missing", role="root_cause", claim="c", quote="nope"),
+                ],
+                problem_description="p2",
+            ),
+        ],
+    )
+
+    verifier = EvidenceVerifier(model="test", mode="llm")
+    verifier._llm_agent = _FakeAgent()
+
+    verified = await verifier.verify_metric_result_async(result, eval_input)
+
+    assert verified.verifications[0].evidence_status == "weak"
+    assert verified.verifications[0].verifier_method == "llm"
+    assert verified.verifications[0].usable_for_diagnosis is True
+    assert verified.verifications[1].evidence_status == "invalid"
+    assert verified.verifications[1].usable_for_diagnosis is False
+    # grounded evidence should be flagged for the weak finding's first item only.
+    assert verified.verifications[0].evidence_item_checks[0].quote_found is True

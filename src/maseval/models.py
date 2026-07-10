@@ -291,6 +291,7 @@ class EvidenceVerificationResult(BaseModel):
     evidence_item_checks: list[EvidenceItemCheck] = Field(default_factory=list)
     usable_for_diagnosis: bool
     verifier_explanation: str
+    verifier_method: str = "deterministic"
 
 
 class EvidenceVerificationMetricResult(BaseModel):

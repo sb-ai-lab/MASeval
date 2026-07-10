@@ -136,6 +136,7 @@ async def main(
     result_file_name: str = "findings_",
     folder_name: str = "who&when_hand_findings",
     from_idx: int = 0,
+    verifier: str = "deterministic",
 ):
     """Run all LLM findings-evaluators on each row of the dataset.
 
@@ -167,6 +168,12 @@ async def main(
         judge_client = None
 
     final_answer_verifier = FinalAnswerVerifier(model=model_name)
+
+    evidence_verifier = (
+        EvidenceVerifier(model=model, mode=verifier)
+        if verifier == "llm"
+        else EvidenceVerifier()
+    )
 
     cnt = 0
     for task in range(len(df)):
@@ -210,6 +217,8 @@ async def main(
                 final_answer_verifier,
                 result_file_name,
                 folder_name,
+                evidence_verifier,
+                verifier,
             )
         else:
             await _evaluate_task(
@@ -222,6 +231,8 @@ async def main(
                 final_answer_verifier,
                 result_file_name,
                 folder_name,
+                evidence_verifier,
+                verifier,
             )
 
 
@@ -302,6 +313,7 @@ def _save_results(
     task: int,
     result_file_name: str,
     folder_name: str,
+    verifier: str = "deterministic",
 ) -> Path:
     """Write the per-task JSON file. Returns the file path."""
     output_dir = Path(__file__).parent / folder_name
@@ -315,6 +327,7 @@ def _save_results(
     payload["report"] = build_evaluation_report(
         payload,
         reference_answer=trace_metadata["ground_truth"],
+        verifier_mode="llm" if verifier == "llm" else "soft",
     )
     # Keep final-answer verification in the report status only, not as a
     # separate top-level block in the saved per-task JSON.
@@ -336,10 +349,15 @@ async def _evaluate_task(
     final_answer_verifier: FinalAnswerVerifier,
     result_file_name: str,
     folder_name: str,
+    evidence_verifier: EvidenceVerifier,
+    verifier: str = "deterministic",
 ):
     """Run evaluators without Langfuse tracing."""
     findings_results = await _run_all_metrics(model, eval_input)
-    evidence_results = EvidenceVerifier().verify_all(findings_results, eval_input)
+    if verifier == "llm":
+        evidence_results = await evidence_verifier.verify_all_async(findings_results, eval_input)
+    else:
+        evidence_results = evidence_verifier.verify_all(findings_results, eval_input)
     final_answer_result = await _run_final_answer_verification(
         final_answer_verifier,
         history,
@@ -357,6 +375,7 @@ async def _evaluate_task(
         task,
         result_file_name,
         folder_name,
+        verifier=verifier,
     )
 
 
@@ -371,6 +390,8 @@ async def _evaluate_task_traced(
     final_answer_verifier: FinalAnswerVerifier,
     result_file_name: str,
     folder_name: str,
+    evidence_verifier: EvidenceVerifier,
+    verifier: str = "deterministic",
 ):
     """Run evaluators inside a Langfuse parent span; full findings go to span.output."""
     with judge_client.start_as_current_span(
@@ -383,7 +404,10 @@ async def _evaluate_task_traced(
         )
 
         findings_results = await _run_all_metrics(model, eval_input)
-        evidence_results = EvidenceVerifier().verify_all(findings_results, eval_input)
+        if verifier == "llm":
+            evidence_results = await evidence_verifier.verify_all_async(findings_results, eval_input)
+        else:
+            evidence_results = evidence_verifier.verify_all(findings_results, eval_input)
         final_answer_result = await _run_final_answer_verification(
             final_answer_verifier,
             history,
@@ -401,6 +425,7 @@ async def _evaluate_task_traced(
             task,
             result_file_name,
             folder_name,
+            verifier=verifier,
         )
 
         # Full findings body as the span output (per design choice)
@@ -444,6 +469,12 @@ if __name__ == "__main__":
         default="both",
         help="Which dataset(s) to evaluate.",
     )
+    parser.add_argument(
+        "--verifier",
+        choices=("deterministic", "llm"),
+        default="deterministic",
+        help="EvidenceVerifier strategy: deterministic (default) or LLM-judged grounding.",
+    )
     args = parser.parse_args()
 
     async def _run_selected(selected_run: str):
@@ -455,15 +486,17 @@ if __name__ == "__main__":
                 result_file_name="gemini_findings_",
                 folder_name="who&when_algo_gemini_idx_msg_v2",
                 from_idx=from_idx,
+                verifier=args.verifier,
             )
         if selected_run in ("hc", "both"):
             await main(
-                model_name="google/gemini-2.5-flash",
+                model_name="google/gemini-2.5-flash:google-ai-studio",
                 enable_tracing=True,
                 df=df_hc,
                 result_file_name="gemini_findings_",
-                folder_name="who&when_hand_gemini_idx_msg_v2",
+                folder_name="who&when_hand_gemini_idx_msg_studio",
                 from_idx=from_idx,
+                verifier=args.verifier,
             )
 
     asyncio.run(_run_selected(args.run))

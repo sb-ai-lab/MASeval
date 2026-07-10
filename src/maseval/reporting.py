@@ -304,6 +304,9 @@ def _is_usable(
     * ``"soft"``   -- ``verified``/``weak`` are relevant; ``invalid`` (and any
       finding without verifier output) goes to review targets. This is the
       default and reproduces the pre-ablation behavior.
+    * ``"llm"``    -- same gating as ``soft``, but the ``evidence_status`` was
+      assigned by the LLM verifier (``EvidenceVerifier(mode="llm")``) rather than
+      the deterministic rules.
     """
     if verifier_mode == "none":
         return True
@@ -312,6 +315,9 @@ def _is_usable(
         return False
     if verifier_mode == "strict":
         return evidence_status == "verified"
+    if verifier_mode == "llm":
+        # LLM-judged grounding: verified/weak count, invalid goes to review.
+        return evidence_status in ("verified", "weak")
     # soft
     return evidence_status in ("verified", "weak")
 

@@ -61,6 +61,7 @@ _VERIFIER_POLICY = {
     "none": "no verifier: every LLM finding counts",
     "strict": "only 'verified' findings count; weak + invalid go to review",
     "soft": "verified/weak are counted; invalid findings are excluded and left for review",
+    "llm": "verified/weak are counted (LLM-judged grounding); invalid findings are excluded and left for review",
 }
 REPORTS_DIR = THIS_DIR / "reports"
 DEFAULT_OUTPUT_JSON_PATH = REPORTS_DIR / "agent_step_metrics.json"
