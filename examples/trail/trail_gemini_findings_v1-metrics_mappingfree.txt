@@ -1,0 +1,20 @@
+================================================================================
+Mapping-free TRAIL metrics for MASeval pipeline run
+(examples/trail/trail_gemini_findings_v1 | minor policy: all)
+================================================================================
+Scored traces           : 116
+Traces with >=1 finding : 84
+
+--- LoCc (location accuracy, category-free) ---
+exact match             : 0.1830
+within +/-1 spans       : 0.5810
+within +/-3 spans       : 0.8712
+
+--- Volume correlation (criterion-independent) ---
+Spearman(#our findings, #gold errors) : 0.7223
+Spearman(#our findings, gold overall) : -0.1543
+
+--- Descriptive summary ---
+our findings / trace    : mean=6.92 median=4.5
+severity mix (our findings): critical=636 major=152 minor=15
+evidence grounding      : verified=684, invalid=10, weak=109

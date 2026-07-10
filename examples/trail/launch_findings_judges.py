@@ -61,12 +61,15 @@ LLM_METRICS_TO_TEST = [
 ]
 
 
-TRACES_DIR = Path(
-    "/Users/alina/trail-benchmark/benchmarking/data/GAIA"
-)
-ANNOTATIONS_DIR = Path(
-    "/Users/alina/trail-benchmark/benchmarking/processed_annotations_gaia"
-)
+# Override per machine with $TRAIL_GAIA_DIR / $TRAIL_ANNO_DIR.
+TRACES_DIR = Path(os.environ.get(
+    "TRAIL_GAIA_DIR",
+    "/Users/alina/trail-benchmark/benchmarking/data/GAIA",
+))
+ANNOTATIONS_DIR = Path(os.environ.get(
+    "TRAIL_ANNO_DIR",
+    "/Users/alina/trail-benchmark/benchmarking/processed_annotations_gaia",
+))
 OUTPUT_DIR = Path(__file__).parent / "trail_gemini_findings_v1"
 
 # Binarization threshold for the gold annotation ``scores[0].overall``:

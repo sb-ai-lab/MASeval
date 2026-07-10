@@ -44,7 +44,8 @@ load_dotenv(THIS_DIR / ".env")
 
 from maseval.validators.llm_confirm import confirm_trace_async  # noqa: E402
 
-DEFAULT_SRC = "/mnt/c/Users/barak/Downloads/test.jsonl"
+# Source AEGIS JSONL (conversation_history). Override per machine with $AEGIS_SRC.
+DEFAULT_SRC = os.environ.get("AEGIS_SRC", "/mnt/c/Users/barak/Downloads/test.jsonl")
 
 
 def _n(nlv: dict) -> int:

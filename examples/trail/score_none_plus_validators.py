@@ -35,6 +35,7 @@ from __future__ import annotations
 import argparse
 import glob
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -47,7 +48,11 @@ for p in (ROOT / "src", THIS_DIR):
 from maseval.diagnostic_accuracy import read_prediction_file  # noqa: E402
 from maseval.validators.base import trail_to_spans  # noqa: E402
 
-DEFAULT_GAIA = "/mnt/c/Users/barak/Downloads/trail-benchmark-main/benchmarking/data/GAIA"
+# GAIA raw-trace dir. Override per machine with $TRAIL_GAIA_DIR.
+DEFAULT_GAIA = os.environ.get(
+    "TRAIL_GAIA_DIR",
+    "/mnt/c/Users/barak/Downloads/trail-benchmark-main/benchmarking/data/GAIA",
+)
 
 FILTERS = ("none_only", "all", "conf_unc", "confirmed")
 FILTER_LABELS = {
