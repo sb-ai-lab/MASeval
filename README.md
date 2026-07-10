@@ -11,6 +11,14 @@ Instead of relying on a single general-purpose LLM-as-a-Judge prompt, TraceInspe
 - a rule-based report builder that produces a unified diagnostic report.
 
 The framework is implemented in the **MASeval** repository and is designed to work across heterogeneous trace formats and evaluation benchmarks.
+
+## 🌐 Online Demo
+
+A live version of TraceInspector is available on Hugging Face Spaces:
+
+👉 https://huggingface.co/spaces/jrzkaminski/masque-dashboard
+
+The demo showcases the complete diagnostic workflow, including trace visualization, intermediate module outputs, and the final diagnostic report.
 ---
 
 ## Why TraceInspector?
