@@ -235,11 +235,29 @@ def idxs(history: list[dict[str, str]]) -> list[str]:
     return [str(i + 1) for i in range(len(history))]
 
 
+# Char budget for the rendered trace body. Some TraceElephant traces are enormous
+# (SWE code dumps reach ~10M chars, ~2.6M tokens) and overflow gemini-2.5-flash's
+# ~1M-token context -> the evaluator call 400s. We cap the *per-step* content so
+# every step index stays visible (dropping steps would risk hiding the culprit
+# step and break localization). Traces under budget render unchanged.
+TRACE_CHAR_BUDGET = 500_000
+_MIN_STEP_CHARS = 600
+
+
+def _truncate(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    dropped = len(text) - limit
+    return f"{text[:limit]}\n    …[truncated {dropped} chars]"
+
+
 def format_trace(example: TraceElephantExample) -> str:
     """Render a failure trace for an LLM evaluator.
 
     Each step is prefixed with its **1-based step number** (== gold
     ``mistake_step``); evaluators cite that number in ``evidence[i].idx``.
+    Oversized traces are compressed by capping each step's content (all step
+    numbers are preserved) so the call fits the model context.
     """
     lines = ["USER INSTRUCTION:", str(example.question), ""]
     if example.agent_system_intro:
@@ -248,8 +266,16 @@ def format_trace(example: TraceElephantExample) -> str:
         "TRACE STEPS (each step is prefixed with its 1-based step number in "
         "square brackets; cite that number in evidence[i].idx):"
     )
+
+    n = len(example.history) or 1
+    total = sum(len(s["content"]) for s in example.history)
+    # Only cap when the trace would exceed the budget; scale the per-step limit
+    # so the whole trace fits, but never below a floor that keeps steps legible.
+    step_limit = None if total <= TRACE_CHAR_BUDGET else max(_MIN_STEP_CHARS, TRACE_CHAR_BUDGET // n)
+
     for i, step in enumerate(example.history, start=1):
-        lines.append(f"[{i}] {step['name']}: {step['content']}")
+        content = step["content"] if step_limit is None else _truncate(step["content"], step_limit)
+        lines.append(f"[{i}] {step['name']}: {content}")
     return "\n".join(lines)
 
 
