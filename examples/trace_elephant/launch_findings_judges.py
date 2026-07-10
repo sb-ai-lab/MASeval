@@ -70,6 +70,11 @@ LLM_METRICS_TO_TEST = [
 
 METRIC_TIMEOUT = float(os.environ.get("METRIC_TIMEOUT", "600"))
 MAX_OUTPUT_TOKENS = int(os.environ.get("MAX_OUTPUT_TOKENS", "4096"))
+# Retries per evaluator. OpenRouter returns finish_reason='error' when the
+# upstream (gemini) call fails transiently under load; pydantic_ai then raises
+# (surfacing as UnexpectedModelBehavior / an IndexError in maseval's error path).
+# These are retryable, so give each evaluator a few attempts with backoff.
+METRIC_MAX_ATTEMPTS = int(os.environ.get("METRIC_MAX_ATTEMPTS", "4"))
 
 SYSTEMS = ("captain", "magentic", "swe")
 
@@ -79,15 +84,21 @@ async def _run_all_metrics(model, eval_input: RawTraceInput) -> dict:
     findings_results: dict = {}
     for metric_type in LLM_METRICS_TO_TEST:
         print(f"  --- {metric_type.value} ---")
-        try:
-            metric = create_metric(metric_type, model)
-            result = await asyncio.wait_for(
-                metric.evaluate(eval_input), timeout=METRIC_TIMEOUT
-            )
-            findings_results[metric_type.value] = result
-            print(f"      findings: {len(result.findings)}")
-        except Exception as exc:  # noqa: BLE001 - isolate one metric's failure
-            print(f"      error: {type(exc).__name__}: {exc}")
+        for attempt in range(1, METRIC_MAX_ATTEMPTS + 1):
+            try:
+                metric = create_metric(metric_type, model)
+                result = await asyncio.wait_for(
+                    metric.evaluate(eval_input), timeout=METRIC_TIMEOUT
+                )
+                findings_results[metric_type.value] = result
+                print(f"      findings: {len(result.findings)}")
+                break
+            except Exception as exc:  # noqa: BLE001 - isolate one metric's failure
+                if attempt < METRIC_MAX_ATTEMPTS:
+                    await asyncio.sleep(2 * attempt)
+                    print(f"      retry {attempt}/{METRIC_MAX_ATTEMPTS - 1} after {type(exc).__name__}")
+                else:
+                    print(f"      error: {type(exc).__name__}: {exc}")
     return findings_results
 
 
@@ -118,9 +129,18 @@ async def _run_final_answer_verification(
     needed). ``df`` only needs to be non-None here. The trace is passed
     structured (instruction + steps) so the judge knows what "complete" means.
     """
+    # Cap the history the MTC judge sees so oversized SWE traces don't blow the
+    # model context (the judge only needs enough to assess task completion).
+    n = max(1, len(ex.history))
+    cap = max(ted._MIN_STEP_CHARS, ted.TRACE_CHAR_BUDGET // n)
+    steps = [
+        {"name": s["name"],
+         "content": s["content"] if len(s["content"]) <= cap else s["content"][:cap] + "…[truncated]"}
+        for s in ex.history
+    ]
     try:
         return await final_answer_verifier.verify_final_answer(
-            {"instruction": ex.question, "steps": ex.history},
+            {"instruction": ex.question, "steps": steps},
             gt=None,
             df="trace_elephant",
         )
