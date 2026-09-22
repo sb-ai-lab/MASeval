@@ -24,6 +24,7 @@ The framework is implemented in the **MASeval** repository (Python package `mase
 A live version of TraceInspector is available on Hugging Face Spaces:
 
 👉 **Demo:** https://huggingface.co/spaces/jrzkaminski/masque-dashboard
+
 🎬 **Video walkthrough:** https://youtu.be/dy_5b-i2vc0
 
 - **Example Trace** — explore precomputed diagnostic reports without any API key;
